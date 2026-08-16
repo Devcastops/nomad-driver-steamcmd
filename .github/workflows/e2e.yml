@@ -145,7 +145,12 @@ jobs:
           done
 
           nomad job status "$job_id"
-          alloc_id=$(nomad job status -short "$job_id" | grep -A1 "^Allocations" | tail -1 | awk '{print $1}')
+          alloc_id=$(nomad job allocs -json "$job_id" | jq -r '.[0].ID')
+          if [ -z "$alloc_id" ] || [ "$alloc_id" = "null" ]; then
+            echo "::error::could not determine an allocation ID for job $job_id"
+            nomad job status "$job_id"
+            exit 1
+          fi
           echo "alloc_id=$alloc_id" >> "$GITHUB_ENV"
 
           nomad alloc status "$alloc_id"
@@ -174,7 +179,6 @@ jobs:
 
       - name: Assert install actually landed on disk
         run: |
-          alloc_dir=$(nomad alloc status "$alloc_id" | awk '/^Allocation Dir/ {print $NF}')
           find /tmp/nomad-data/alloc/"$alloc_id" -maxdepth 6 -iname "*steamapp*" -o -iname "*.acf" | tee /tmp/found_files.txt
           if [ ! -s /tmp/found_files.txt ]; then
             echo "::error::no installed steamapp files found under the alloc dir"
@@ -280,7 +284,12 @@ jobs:
           done
           nomad job status "$job_id"
 
-          launch_alloc_id=$(nomad job status -short "$job_id" | grep -A1 "^Allocations" | tail -1 | awk '{print $1}')
+          launch_alloc_id=$(nomad job allocs -json "$job_id" | jq -r '.[0].ID')
+          if [ -z "$launch_alloc_id" ] || [ "$launch_alloc_id" = "null" ]; then
+            echo "::error::could not determine an allocation ID for job $job_id"
+            nomad job status "$job_id"
+            exit 1
+          fi
           echo "alloc before restart: $launch_alloc_id"
 
           # Kill and restart the Nomad agent to force RecoverTask.
