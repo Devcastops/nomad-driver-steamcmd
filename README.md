@@ -121,7 +121,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
 > runner with unrestricted network access and does the real
 > `go mod tidy && go build && go test` — treat a green CI run as the
 > actual first compilation, and expect to fix any real API-surface
-> mismatches against `github.com/hashicorp/nomad@v1.8.4`'s current
+> mismatches against `github.com/hashicorp/nomad@v1.9.3`'s current
 > `plugins/drivers` interface that a from-memory scaffold can't
    guarantee against (see `driver/lifecycle.go`, `driver/driver.go`).
 
