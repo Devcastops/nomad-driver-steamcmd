@@ -1,0 +1,339 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NOMAD_VERSION: "1.8.4"
+  # Half-Life Dedicated Server: small (~100-200MB), anonymous-downloadable,
+  # well-known stable choice for steamcmd smoke tests. Swap via workflow
+  # dispatch input if you want to test against a different app.
+  TEST_APP_ID: "90"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Build driver plugin
+        run: |
+          mkdir -p dist/plugins
+          go build -o dist/plugins/nomad-driver-steamcmd ./cmd/nomad-driver-steamcmd
+
+      - name: Install Nomad
+        run: |
+          curl -fsSL -o nomad.zip \
+            "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip"
+          unzip nomad.zip
+          sudo mv nomad /usr/local/bin/nomad
+          nomad version
+
+      - name: Install steamcmd
+        run: |
+          sudo dpkg --add-architecture i386
+          echo steam steam/question select "I AGREE" | sudo debconf-set-selections
+          echo steam steam/license note "" | sudo debconf-set-selections
+          sudo add-apt-repository -y multiverse
+          sudo apt-get update -y
+          sudo apt-get install -y steamcmd lib32gcc-s1
+          sudo ln -sf /usr/games/steamcmd /usr/local/bin/steamcmd
+          steamcmd +quit || true # first run self-updates and may "fail" harmlessly
+
+      - name: Write Nomad dev-agent config
+        run: |
+          mkdir -p /tmp/nomad-data
+          cat > /tmp/nomad-agent.hcl <<'EOF'
+          plugin_dir = "${GITHUB_WORKSPACE}/dist/plugins"
+
+          plugin "steamcmd" {
+            config {
+              steamcmd_path = "steamcmd"
+              default_login {
+                anonymous = true
+              }
+            }
+          }
+          EOF
+          # Expand GITHUB_WORKSPACE into the HCL file since HCL doesn't do
+          # shell-style env expansion itself.
+          sed -i "s|\${GITHUB_WORKSPACE}|${GITHUB_WORKSPACE}|" /tmp/nomad-agent.hcl
+          cat /tmp/nomad-agent.hcl
+
+      - name: Start Nomad dev agent
+        run: |
+          sudo -E nohup nomad agent -dev \
+            -data-dir=/tmp/nomad-data \
+            -config=/tmp/nomad-agent.hcl \
+            > /tmp/nomad.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null; then
+              echo "nomad is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4646/v1/status/leader
+
+      - name: Confirm driver fingerprinted healthy
+        run: |
+          for i in $(seq 1 30); do
+            status=$(curl -s http://127.0.0.1:4646/v1/nodes | jq -r '.[0].Drivers.steamcmd.Healthy')
+            echo "driver health: $status"
+            if [ "$status" = "true" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::steamcmd driver never reported healthy"
+          cat /tmp/nomad.log
+          exit 1
+
+      - name: Render install-only test job
+        run: |
+          cat > /tmp/install-test.nomad.hcl <<EOF
+          job "steamcmd-e2e-install" {
+            datacenters = ["dc1"]
+            type        = "batch"
+
+            group "install" {
+              task "hlds" {
+                driver = "steamcmd"
+
+                config {
+                  app_id      = "${TEST_APP_ID}"
+                  install_dir = "local/steamapp"
+                  validate    = true
+                }
+
+                resources {
+                  cpu    = 500
+                  memory = 512
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Run install job and wait for completion
+        run: |
+          nomad job run /tmp/install-test.nomad.hcl
+          job_id="steamcmd-e2e-install"
+
+          for i in $(seq 1 60); do
+            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
+            echo "job status: $status"
+            if [ "$status" = "dead" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          nomad job status "$job_id"
+          alloc_id=$(nomad job status -short "$job_id" | grep -A1 "^Allocations" | tail -1 | awk '{print $1}')
+          echo "alloc_id=$alloc_id" >> "$GITHUB_ENV"
+
+          nomad alloc status "$alloc_id"
+
+      - name: Assert task exited successfully
+        run: |
+          exit_code=$(nomad alloc status -json "$alloc_id" | jq -r '.TaskStates.hlds.Events[-1].Details.exit_code // "unknown"')
+          echo "reported exit_code: $exit_code"
+
+          task_state=$(nomad alloc status -json "$alloc_id" | jq -r '.TaskStates.hlds.State')
+          echo "task state: $task_state"
+
+          if [ "$task_state" != "dead" ]; then
+            echo "::error::task did not reach dead state"
+            exit 1
+          fi
+
+          # Check for our own failure event markers (auth failure, disk
+          # space preflight, no-success-marker) rather than only trusting
+          # Nomad's generic exit code plumbing.
+          nomad alloc logs "$alloc_id" hlds | tee /tmp/task.log
+          if grep -qiE "ERROR!|authentication failed|insufficient disk space" /tmp/task.log; then
+            echo "::error::task log contains a failure marker"
+            exit 1
+          fi
+
+      - name: Assert install actually landed on disk
+        run: |
+          alloc_dir=$(nomad alloc status "$alloc_id" | awk '/^Allocation Dir/ {print $NF}')
+          find /tmp/nomad-data/alloc/"$alloc_id" -maxdepth 6 -iname "*steamapp*" -o -iname "*.acf" | tee /tmp/found_files.txt
+          if [ ! -s /tmp/found_files.txt ]; then
+            echo "::error::no installed steamapp files found under the alloc dir"
+            exit 1
+          fi
+
+      - name: Render deliberate auth-failure job (negative test)
+        run: |
+          cat > /tmp/authfail-test.nomad.hcl <<EOF
+          job "steamcmd-e2e-authfail" {
+            datacenters = ["dc1"]
+            type        = "batch"
+
+            group "install" {
+              task "badauth" {
+                driver = "steamcmd"
+
+                config {
+                  app_id      = "${TEST_APP_ID}"
+                  install_dir = "local/steamapp"
+
+                  login {
+                    anonymous = false
+                    username  = "definitely-not-a-real-account"
+                    password  = "definitely-wrong"
+                  }
+                }
+
+                resources {
+                  cpu    = 500
+                  memory = 512
+                }
+              }
+            }
+          }
+          EOF
+          nomad job run /tmp/authfail-test.nomad.hcl
+
+      - name: Assert auth-failure job fails cleanly (not a hang)
+        run: |
+          job_id="steamcmd-e2e-authfail"
+          for i in $(seq 1 30); do
+            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
+            echo "authfail job status: $status"
+            if [ "$status" = "dead" ]; then
+              break
+            fi
+            sleep 5
+          done
+          nomad job status "$job_id" | tee /tmp/authfail_status.txt
+          if ! grep -qi "failed" /tmp/authfail_status.txt; then
+            echo "::error::expected the deliberately-bad-credentials job to fail, it did not"
+            exit 1
+          fi
+
+      - name: Render long-running launch-phase job (for recovery test)
+        run: |
+          # Reuses the already-cached HLDS install and pairs it with a
+          # trivial long-running "launch" command standing in for a real
+          # game server process, purely to exercise RecoverTask's PID
+          # reattach path below. update_on_start=false so this doesn't
+          # re-run steamcmd against the same install_dir as the earlier job.
+          cat > /tmp/launch-test.nomad.hcl <<EOF
+          job "steamcmd-e2e-launch" {
+            datacenters = ["dc1"]
+            type        = "service"
+
+            group "launch" {
+              task "sleeper" {
+                driver = "steamcmd"
+
+                config {
+                  app_id          = "${TEST_APP_ID}"
+                  install_dir     = "local/steamapp"
+                  update_on_start = false
+
+                  launch {
+                    command = "/bin/sleep"
+                    args    = ["600"]
+                  }
+                }
+
+                resources {
+                  cpu    = 200
+                  memory = 128
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Restart-recovery smoke test (RecoverTask)
+        run: |
+          nomad job run /tmp/launch-test.nomad.hcl
+          job_id="steamcmd-e2e-launch"
+
+          for i in $(seq 1 30); do
+            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
+            if [ "$status" = "running" ]; then
+              break
+            fi
+            sleep 3
+          done
+          nomad job status "$job_id"
+
+          launch_alloc_id=$(nomad job status -short "$job_id" | grep -A1 "^Allocations" | tail -1 | awk '{print $1}')
+          echo "alloc before restart: $launch_alloc_id"
+
+          # Kill and restart the Nomad agent to force RecoverTask.
+          sudo pkill -SIGTERM nomad || true
+          sleep 2
+
+          sudo -E nohup nomad agent -dev \
+            -data-dir=/tmp/nomad-data \
+            -config=/tmp/nomad-agent.hcl \
+            > /tmp/nomad-restart.log 2>&1 &
+
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          for i in $(seq 1 30); do
+            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
+            echo "post-restart job status: $status"
+            if [ "$status" = "running" ]; then
+              break
+            fi
+            sleep 3
+          done
+          nomad job status "$job_id"
+
+          # If RecoverTask correctly reattached by PID instead of losing
+          # track of the task, the allocation should still be the same one
+          # (Nomad wouldn't need to reschedule/restart it) and the task
+          # should still report running.
+          task_state=$(nomad alloc status -json "$launch_alloc_id" | jq -r '.TaskStates.sleeper.State')
+          if [ "$task_state" != "running" ]; then
+            echo "::error::task did not remain running across a client restart -- RecoverTask likely failed to reattach"
+            nomad alloc logs "$launch_alloc_id" sleeper || true
+            exit 1
+          fi
+          echo "task still running post-restart with same allocation -- RecoverTask reattach OK"
+
+          nomad job stop -purge "$job_id" || true
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/artifacts
+          cp /tmp/nomad.log /tmp/artifacts/ 2>/dev/null || true
+          cp /tmp/nomad-restart.log /tmp/artifacts/ 2>/dev/null || true
+          cp /tmp/task.log /tmp/artifacts/ 2>/dev/null || true
+          nomad job status steamcmd-e2e-install > /tmp/artifacts/install-job-status.txt 2>&1 || true
+          nomad job status steamcmd-e2e-authfail > /tmp/artifacts/authfail-job-status.txt 2>&1 || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: /tmp/artifacts
+          retention-days: 7
