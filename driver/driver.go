@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/drivers/shared/eventer"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
@@ -46,9 +47,9 @@ var driverCapabilities = &drivers.Capabilities{
 
 // Driver implements drivers.DriverPlugin for steamcmd-managed tasks.
 type Driver struct {
-	eventer     *drivers.Eventer
+	eventer     *eventer.Eventer
 	config      PluginConfig
-	nomadConfig *base.ClientAgentConfig
+	nomadConfig *base.ClientDriverConfig
 
 	tasks  sync.Map // task ID -> *taskHandle
 	ctx    context.Context
@@ -62,7 +63,7 @@ func NewPlugin(logger hclog.Logger) drivers.DriverPlugin {
 	ctx, cancel := context.WithCancel(context.Background())
 	logger = logger.Named(pluginName)
 	return &Driver{
-		eventer: drivers.NewEventer(ctx, logger),
+		eventer: eventer.NewEventer(ctx, logger),
 		config:  PluginConfig{SteamCmdPath: "steamcmd"},
 		ctx:     ctx,
 		cancel:  cancel,
