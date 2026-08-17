@@ -236,11 +236,18 @@ jobs:
 
       - name: Render long-running launch-phase job (for recovery test)
         run: |
-          # Reuses the already-cached HLDS install and pairs it with a
-          # trivial long-running "launch" command standing in for a real
-          # game server process, purely to exercise RecoverTask's PID
-          # reattach path below. update_on_start=false so this doesn't
-          # re-run steamcmd against the same install_dir as the earlier job.
+          # Pairs a real steamcmd install with a trivial long-running
+          # "launch" command (standing in for a real game server process),
+          # purely to exercise RecoverTask's PID reattach path below.
+          #
+          # Note: this is a fresh allocation, so install_dir is NOT the
+          # same directory the earlier install-only job populated --
+          # task-local dirs are per-allocation, not shared across jobs.
+          # update_on_start=false therefore does not skip steamcmd here;
+          # it's set mainly to exercise that config path, and steamcmd
+          # still does a real (small) download. Resources below must
+          # cover that install phase, not just the trivial launch command
+          # -- StartTask runs both synchronously in the same task cgroup.
           cat > /tmp/launch-test.nomad.hcl <<EOF
           job "steamcmd-e2e-launch" {
             datacenters = ["dc1"]
@@ -262,8 +269,8 @@ jobs:
                 }
 
                 resources {
-                  cpu    = 200
-                  memory = 128
+                  cpu    = 500
+                  memory = 768
                 }
               }
             }
@@ -275,12 +282,12 @@ jobs:
           nomad job run /tmp/launch-test.nomad.hcl
           job_id="steamcmd-e2e-launch"
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
             if [ "$status" = "running" ]; then
               break
             fi
-            sleep 3
+            sleep 5
           done
           nomad job status "$job_id"
 
@@ -325,6 +332,7 @@ jobs:
           task_state=$(nomad alloc status -json "$launch_alloc_id" | jq -r '.TaskStates.sleeper.State')
           if [ "$task_state" != "running" ]; then
             echo "::error::task did not remain running across a client restart -- RecoverTask likely failed to reattach"
+            nomad alloc status "$launch_alloc_id" || true
             nomad alloc logs "$launch_alloc_id" sleeper || true
             exit 1
           fi
