@@ -55,10 +55,31 @@ jobs:
           sudo ln -sf /usr/games/steamcmd /usr/local/bin/steamcmd
           steamcmd +quit || true # first run self-updates and may "fail" harmlessly
 
-      - name: Write Nomad dev-agent config
+      - name: Write Nomad agent config
         run: |
           mkdir -p /tmp/nomad-data
           cat > /tmp/nomad-agent.hcl <<'EOF'
+          data_dir  = "/tmp/nomad-data"
+          bind_addr = "127.0.0.1"
+
+          # Explicit server+client config with real raft persistence,
+          # instead of `nomad agent -dev`. Dev mode always boots a fresh,
+          # in-memory single-node cluster with no persisted server state --
+          # convenient for most of this suite, but it silently defeats the
+          # restart-recovery test later on: after a restart under -dev, the
+          # server has no memory the job ever existed at all, so
+          # RecoverTask never even gets a chance to run. This config
+          # behaves like -dev for a single node otherwise, but actually
+          # persists across a real agent restart.
+          server {
+            enabled          = true
+            bootstrap_expect = 1
+          }
+
+          client {
+            enabled = true
+          }
+
           plugin_dir = "${GITHUB_WORKSPACE}/dist/plugins"
 
           plugin "steamcmd" {
@@ -73,10 +94,9 @@ jobs:
           sed -i "s|\${GITHUB_WORKSPACE}|${GITHUB_WORKSPACE}|" /tmp/nomad-agent.hcl
           cat /tmp/nomad-agent.hcl
 
-      - name: Start Nomad dev agent
+      - name: Start Nomad agent
         run: |
-          sudo -E nohup nomad agent -dev \
-            -data-dir=/tmp/nomad-data \
+          sudo -E nohup nomad agent \
             -config=/tmp/nomad-agent.hcl \
             > /tmp/nomad.log 2>&1 &
           for i in $(seq 1 30); do
@@ -364,8 +384,7 @@ jobs:
           sudo pkill -SIGTERM nomad || true
           sleep 2
 
-          sudo -E nohup nomad agent -dev \
-            -data-dir=/tmp/nomad-data \
+          sudo -E nohup nomad agent \
             -config=/tmp/nomad-agent.hcl \
             > /tmp/nomad-restart.log 2>&1 &
 
