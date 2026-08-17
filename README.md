@@ -101,13 +101,21 @@ plugin "steamcmd" {
     steamcmd_path                = "steamcmd" # must be on the node's PATH
     install_root                 = ""         # reserved, unused in v1
     max_concurrent_installs      = 0          # 0 = unbounded
-    default_login_anonymous      = true
+    default_login_anonymous      = "true"     # STRING "true"/"false", not a bare bool -- see note below
     default_login_username       = ""
     default_login_password       = ""
     default_login_password_file  = ""
   }
 }
 ```
+
+`default_login_anonymous` takes the *string* `"true"`/`"false"`, not a bare
+HCL boolean. This isn't a style choice -- a native bool attribute at this
+specific layer (the client agent's own `nomad.hcl`, not a job spec) was
+found to reliably decode as `false` regardless of what the HCL actually
+set, while string attributes at the same layer decoded correctly every
+time. See the `PluginConfig` doc comment in `driver/config.go` for the
+full account of what was ruled out before landing on this.
 
 ## Building
 
@@ -138,7 +146,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
   1. Installs a real Nomad binary and a real `steamcmd` (via apt,
      `i386` arch + EULA auto-accepted via `debconf-set-selections`).
   2. Starts a single-node `nomad agent -dev` with this plugin loaded and
-     `default_login_anonymous = true`.
+     `default_login_anonymous = "true"`.
   3. Confirms the driver **fingerprints healthy**.
   4. Runs a real install-only job against a small, anonymous-downloadable
      app (Half-Life Dedicated Server, App ID `90`) and asserts the task

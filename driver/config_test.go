@@ -81,6 +81,12 @@ func TestTaskConfig_LoginBuildsFromFlatFields(t *testing.T) {
 }
 
 func TestPluginConfig_DefaultLoginBuildsFromFlatFields(t *testing.T) {
-	cfg := PluginConfig{DefaultLoginAnonymous: true}
+	cfg := PluginConfig{DefaultLoginAnonymousStr: "true"}
 	require.True(t, cfg.DefaultLogin().Anonymous)
+
+	cfgFalse := PluginConfig{DefaultLoginAnonymousStr: "false"}
+	require.False(t, cfgFalse.DefaultLogin().Anonymous)
+
+	cfgEmpty := PluginConfig{}
+	require.False(t, cfgEmpty.DefaultLogin().Anonymous)
 }

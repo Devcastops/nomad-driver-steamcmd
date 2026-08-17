@@ -135,7 +135,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		"task_login_anonymous", taskCfg.LoginAnonymous,
 		"task_login_username", taskCfg.LoginUsername,
 		"launch_is_nil", taskCfg.Launch == nil,
-		"plugin_default_login_anonymous", d.config.DefaultLoginAnonymous,
+		"plugin_default_login_anonymous", d.config.DefaultLogin().Anonymous,
 		"resolved_login_anonymous", login.Anonymous,
 	)
 

@@ -105,7 +105,7 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	d.logger.Info("steamcmd plugin config loaded",
 		"raw_config_bytes", len(cfg.PluginConfig),
 		"steamcmd_path", pluginConfig.SteamCmdPath,
-		"default_login_anonymous", pluginConfig.DefaultLoginAnonymous,
+		"default_login_anonymous", pluginConfig.DefaultLoginAnonymousStr,
 		"default_login_username", pluginConfig.DefaultLoginUsername,
 		"max_concurrent_installs", pluginConfig.MaxConcurrent,
 	)

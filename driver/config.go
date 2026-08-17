@@ -1,6 +1,8 @@
 package steamcmd
 
 import (
+	"strconv"
+
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 )
 
@@ -9,19 +11,19 @@ import (
 // Nomad client's agent config. It provides fleet-wide defaults that a task
 // can omit and inherit from.
 //
-// Login fields are flat (default_login_anonymous, not a nested
-// default_login{} block) -- a nested hclspec.NewBlock was first suspected
-// here, but was disproven: a genuinely flat bool attribute
-// (default_login_anonymous) was ALSO observed decoding to false despite
-// the agent config clearly setting it true, while a flat *string* attr
-// (steamcmd_path) decoded correctly. The one structural difference
-// between them was that steamcmd_path is wrapped in hclspec.NewDefault(...)
-// and default_login_anonymous was not. Every optional attribute below is
-// now explicitly wrapped in NewDefault to match the one field proven to
-// work, regardless of the exact underlying mechanism.
+// DefaultLoginAnonymous is deliberately a STRING ("true"/"false"), not a
+// native bool. Two separate fixes were tried and both failed identically
+// (a nested default_login{} block, then a flat bool attribute wrapped in
+// hclspec.NewDefault) -- in every case a string attribute at this same
+// agent-config layer (steamcmd_path) decoded correctly while the bool
+// attribute came back false regardless of what the HCL actually set.
+// That's a consistent enough pattern (string: always works, bool: always
+// fails, at this specific layer) to act on directly rather than chase the
+// exact internal cause further. Parsed via strconv.ParseBool in
+// DefaultLogin() below.
 type PluginConfig struct {
 	SteamCmdPath             string `codec:"steamcmd_path"`
-	DefaultLoginAnonymous    bool   `codec:"default_login_anonymous"`
+	DefaultLoginAnonymousStr string `codec:"default_login_anonymous"`
 	DefaultLoginUsername     string `codec:"default_login_username"`
 	DefaultLoginPassword     string `codec:"default_login_password"`
 	DefaultLoginPasswordFile string `codec:"default_login_password_file"`
@@ -31,8 +33,9 @@ type PluginConfig struct {
 
 // DefaultLogin builds a LoginConfig from the flat default_login_* fields.
 func (p PluginConfig) DefaultLogin() LoginConfig {
+	anon, _ := strconv.ParseBool(p.DefaultLoginAnonymousStr) // "" -> false, no error handling needed
 	return LoginConfig{
-		Anonymous:    p.DefaultLoginAnonymous,
+		Anonymous:    anon,
 		Username:     p.DefaultLoginUsername,
 		Password:     p.DefaultLoginPassword,
 		PasswordFile: p.DefaultLoginPasswordFile,
@@ -40,8 +43,8 @@ func (p PluginConfig) DefaultLogin() LoginConfig {
 }
 
 // configSpec is the hclspec for the plugin-level config block. Every
-// optional attribute is wrapped in hclspec.NewDefault -- see the
-// PluginConfig doc comment for why.
+// optional attribute is wrapped in hclspec.NewDefault. default_login_anonymous
+// is typed "string" rather than "bool" -- see the PluginConfig doc comment.
 var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"steamcmd_path": hclspec.NewDefault(
 		hclspec.NewAttr("steamcmd_path", "string", false),
@@ -56,8 +59,8 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewLiteral("0"),
 	),
 	"default_login_anonymous": hclspec.NewDefault(
-		hclspec.NewAttr("default_login_anonymous", "bool", false),
-		hclspec.NewLiteral("false"),
+		hclspec.NewAttr("default_login_anonymous", "string", false),
+		hclspec.NewLiteral(`"false"`),
 	),
 	"default_login_username": hclspec.NewDefault(
 		hclspec.NewAttr("default_login_username", "string", false),

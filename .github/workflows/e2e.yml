@@ -64,7 +64,7 @@ jobs:
           plugin "steamcmd" {
             config {
               steamcmd_path = "steamcmd"
-              default_login_anonymous = true
+              default_login_anonymous = "true"
             }
           }
           EOF
