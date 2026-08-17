@@ -102,10 +102,17 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	// Diagnostic: proves at runtime (visible in the client agent's own
 	// log) whether the `plugin "steamcmd" { config { ... } }` stanza is
 	// actually reaching this driver at all, and what it decoded to.
+	// %q + a length are used deliberately instead of the raw value --
+	// hclog renders empty/plain strings and native bools differently
+	// enough (quoted vs bare) that a bare "false" here has previously
+	// been ambiguous between "this is still a bool" and "this is a
+	// string whose actual content is the text false". %q removes that
+	// ambiguity outright.
 	d.logger.Info("steamcmd plugin config loaded",
 		"raw_config_bytes", len(cfg.PluginConfig),
 		"steamcmd_path", pluginConfig.SteamCmdPath,
-		"default_login_anonymous", pluginConfig.DefaultLoginAnonymousStr,
+		"default_login_anonymous_quoted", fmt.Sprintf("%q", pluginConfig.DefaultLoginAnonymousStr),
+		"default_login_anonymous_len", len(pluginConfig.DefaultLoginAnonymousStr),
 		"default_login_username", pluginConfig.DefaultLoginUsername,
 		"max_concurrent_installs", pluginConfig.MaxConcurrent,
 	)
