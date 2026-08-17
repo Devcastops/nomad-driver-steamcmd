@@ -125,6 +125,27 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 
 	login := resolveLogin(taskCfg.Login, d.config.DefaultLogin)
 
+	// Diagnostic: two consecutive jobs in the same driver process and same
+	// client config have shown different login outcomes despite neither
+	// specifying a task-level login block, which none of the obvious
+	// explanations (plugin config not loading, a stray login block, a
+	// nil-vs-zero-value LoginConfig pointer) account for. Logging the raw
+	// decoded state here, for every task, will show ground truth on the
+	// next run instead of another guess.
+	taskLoginAnon := false
+	if taskCfg.Login != nil {
+		taskLoginAnon = taskCfg.Login.Anonymous
+	}
+	d.logger.Info("steamcmd task config decoded",
+		"task_id", cfg.ID,
+		"app_id", taskCfg.AppID,
+		"task_login_is_nil", taskCfg.Login == nil,
+		"task_login_anonymous", taskLoginAnon,
+		"launch_is_nil", taskCfg.Launch == nil,
+		"plugin_default_login_anonymous", d.config.DefaultLogin.Anonymous,
+		"resolved_login_anonymous", login.Anonymous,
+	)
+
 	h := newTaskHandle(d.logger, cfg)
 	// Tracked immediately so InspectTask/TaskEvents work for the duration
 	// of the (potentially long) synchronous install below, even though no

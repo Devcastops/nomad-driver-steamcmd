@@ -317,6 +317,8 @@ jobs:
               nomad alloc logs "$launch_alloc_id" sleeper || true
               nomad alloc logs -stderr "$launch_alloc_id" sleeper || true
             fi
+            echo "--- steamcmd task config decode log (all tasks this run) ---"
+            grep "steamcmd task config decoded" /tmp/nomad.log || echo "::warning::no task-config decode log lines found"
             exit 1
           fi
           echo "alloc before restart: $launch_alloc_id"
