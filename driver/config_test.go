@@ -55,7 +55,7 @@ func TestBuildArgs_PasswordFile(t *testing.T) {
 
 func TestResolveLogin_TaskOverridesPluginDefault(t *testing.T) {
 	def := LoginConfig{Anonymous: true}
-	task := &LoginConfig{Username: "explicit", Password: "pw"}
+	task := LoginConfig{Username: "explicit", Password: "pw"}
 
 	got := resolveLogin(task, def)
 	require.Equal(t, "explicit", got.Username)
@@ -64,21 +64,23 @@ func TestResolveLogin_TaskOverridesPluginDefault(t *testing.T) {
 
 func TestResolveLogin_FallsBackToPluginDefault(t *testing.T) {
 	def := LoginConfig{Anonymous: true}
+	task := LoginConfig{}
 
-	got := resolveLogin(nil, def)
+	got := resolveLogin(task, def)
 	require.True(t, got.Anonymous)
 }
 
-func TestResolveLogin_NonNilButEmptyTaskLoginFallsBackToPluginDefault(t *testing.T) {
-	// Regression test: an hclspec-decoded task `login` block that was
-	// never actually set by the operator can come back as a non-nil
-	// pointer to a zero-value LoginConfig rather than a true nil. This
-	// must still fall back to the plugin's default_login, not be treated
-	// as "explicit login with no credentials" (which would error out of
-	// buildArgs with "no login specified").
-	def := LoginConfig{Anonymous: true}
-	emptyTaskLogin := &LoginConfig{}
+func TestTaskConfig_LoginBuildsFromFlatFields(t *testing.T) {
+	cfg := TaskConfig{LoginAnonymous: true}
+	require.True(t, cfg.Login().Anonymous)
 
-	got := resolveLogin(emptyTaskLogin, def)
-	require.True(t, got.Anonymous)
+	cfg2 := TaskConfig{LoginUsername: "explicit", LoginPassword: "pw"}
+	got := cfg2.Login()
+	require.Equal(t, "explicit", got.Username)
+	require.False(t, got.Anonymous)
+}
+
+func TestPluginConfig_DefaultLoginBuildsFromFlatFields(t *testing.T) {
+	cfg := PluginConfig{DefaultLoginAnonymous: true}
+	require.True(t, cfg.DefaultLogin().Anonymous)
 }

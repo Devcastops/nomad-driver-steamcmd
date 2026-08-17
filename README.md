@@ -73,12 +73,10 @@ config {
   update_on_start = true             # re-run steamcmd before every launch
   install_timeout = "20m"            # optional, Go duration string
 
-  login {
-    anonymous     = true   # or:
-    username      = ""
-    password      = ""     # literal, or:
-    password_file = ""     # path to a file (e.g. rendered by `template`)
-  }
+  login_anonymous     = true   # or:
+  login_username      = ""
+  login_password      = ""     # literal, or:
+  login_password_file = ""     # path to a file (e.g. rendered by `template`)
 
   launch {                 # omit for an install-only task
     command = "local/steamapp/PalServer.sh"
@@ -88,18 +86,25 @@ config {
 }
 ```
 
+Login fields are flat top-level attributes, not a nested `login {}` block.
+That's not a style choice -- a nested block here was found to decode
+incorrectly specifically in the Nomad client agent's plugin-config parsing
+path (flat attributes decoded fine; the nested block's contents silently
+came back as zero values even when set in HCL). See `driver/config.go` for
+the full note.
+
 ## Plugin (client agent) config reference
 
 ```hcl
 plugin "steamcmd" {
   config {
-    steamcmd_path           = "steamcmd" # must be on the node's PATH
-    install_root            = ""         # reserved, unused in v1
-    max_concurrent_installs = 0          # 0 = unbounded
-
-    default_login {
-      anonymous = true
-    }
+    steamcmd_path                = "steamcmd" # must be on the node's PATH
+    install_root                 = ""         # reserved, unused in v1
+    max_concurrent_installs      = 0          # 0 = unbounded
+    default_login_anonymous      = true
+    default_login_username       = ""
+    default_login_password       = ""
+    default_login_password_file  = ""
   }
 }
 ```
@@ -133,7 +138,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
   1. Installs a real Nomad binary and a real `steamcmd` (via apt,
      `i386` arch + EULA auto-accepted via `debconf-set-selections`).
   2. Starts a single-node `nomad agent -dev` with this plugin loaded and
-     `default_login { anonymous = true }`.
+     `default_login_anonymous = true`.
   3. Confirms the driver **fingerprints healthy**.
   4. Runs a real install-only job against a small, anonymous-downloadable
      app (Half-Life Dedicated Server, App ID `90`) and asserts the task

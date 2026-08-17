@@ -64,9 +64,7 @@ jobs:
           plugin "steamcmd" {
             config {
               steamcmd_path = "steamcmd"
-              default_login {
-                anonymous = true
-              }
+              default_login_anonymous = true
             }
           }
           EOF
@@ -162,22 +160,38 @@ jobs:
 
       - name: Assert task exited successfully
         run: |
-          exit_code=$(nomad alloc status -json "$alloc_id" | jq -r '.TaskStates.hlds.Events[-1].Details.exit_code // "unknown"')
-          echo "reported exit_code: $exit_code"
+          # task_state=="dead" alone proves nothing -- a failed task is
+          # also "dead". Check the actual Events array for a Driver
+          # Failure entry directly, rather than grepping task logs (which
+          # can be empty/404 if the task never started at all, silently
+          # passing a log-grep check that has nothing to match against).
+          driver_failure=$(nomad alloc status -json "$alloc_id" | jq -r '[.TaskStates.hlds.Events[]? | select(.Type == "Driver Failure")][0].DisplayMessage // empty')
+          if [ -n "$driver_failure" ]; then
+            echo "::error::task hit a Driver Failure event: $driver_failure"
+            nomad alloc status -verbose "$alloc_id" || true
+            exit 1
+          fi
+
+          exit_code=$(nomad alloc status -json "$alloc_id" | jq -r '[.TaskStates.hlds.Events[]? | select(.Details.exit_code != null)][0].Details.exit_code // empty')
+          echo "reported exit_code: ${exit_code:-none}"
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::task did not exit 0 (got: ${exit_code:-none})"
+            nomad alloc status -verbose "$alloc_id" || true
+            exit 1
+          fi
 
           task_state=$(nomad alloc status -json "$alloc_id" | jq -r '.TaskStates.hlds.State')
           echo "task state: $task_state"
-
           if [ "$task_state" != "dead" ]; then
             echo "::error::task did not reach dead state"
             exit 1
           fi
 
-          # Check for our own failure event markers (auth failure, disk
-          # space preflight, no-success-marker) rather than only trusting
-          # Nomad's generic exit code plumbing.
-          nomad alloc logs "$alloc_id" hlds | tee /tmp/task.log
-          if grep -qiE "ERROR!|authentication failed|insufficient disk space" /tmp/task.log; then
+          # Belt-and-suspenders: also scan actual task output for markers,
+          # now that we know the task genuinely ran (exit_code check above
+          # already passed) rather than relying on this log-grep alone.
+          nomad alloc logs "$alloc_id" hlds | tee /tmp/task.log || true
+          if grep -qiE "ERROR!|authentication failed|insufficient disk space|no login specified" /tmp/task.log; then
             echo "::error::task log contains a failure marker"
             exit 1
           fi
@@ -205,11 +219,9 @@ jobs:
                   app_id      = "${TEST_APP_ID}"
                   install_dir = "local/steamapp"
 
-                  login {
-                    anonymous = false
-                    username  = "definitely-not-a-real-account"
-                    password  = "definitely-wrong"
-                  }
+                  login_anonymous = false
+                  login_username  = "definitely-not-a-real-account"
+                  login_password  = "definitely-wrong"
                 }
 
                 resources {
@@ -222,7 +234,7 @@ jobs:
           EOF
           nomad job run /tmp/authfail-test.nomad.hcl
 
-      - name: Assert auth-failure job fails cleanly (not a hang)
+      - name: Assert auth-failure job fails with a real auth rejection (not a hang, and not our own bug)
         run: |
           job_id="steamcmd-e2e-authfail"
           for i in $(seq 1 30); do
@@ -233,11 +245,36 @@ jobs:
             fi
             sleep 5
           done
-          nomad job status "$job_id" | tee /tmp/authfail_status.txt
-          if ! grep -qi "failed" /tmp/authfail_status.txt; then
-            echo "::error::expected the deliberately-bad-credentials job to fail, it did not"
+          nomad job status "$job_id"
+
+          authfail_alloc_id=$(nomad job allocs -json "$job_id" | jq -r '.[0].ID // empty')
+          if [ -z "$authfail_alloc_id" ]; then
+            echo "::error::could not determine an allocation ID for job $job_id"
             exit 1
           fi
+
+          # A generic "failed" in the job summary isn't enough -- that
+          # would be equally true whether steamcmd genuinely rejected the
+          # bad credentials (what this test wants) or the driver never
+          # even passed a login through at all (a real bug that slipped
+          # past this exact check before). Assert the specific reason.
+          driver_failure=$(nomad alloc status -json "$authfail_alloc_id" | jq -r '[.TaskStates.badauth.Events[]? | select(.Type == "Driver Failure")][0].DisplayMessage // empty')
+          echo "driver failure message: ${driver_failure:-none}"
+
+          if [ -z "$driver_failure" ]; then
+            echo "::error::expected a Driver Failure event, found none"
+            nomad alloc status -verbose "$authfail_alloc_id" || true
+            exit 1
+          fi
+          if echo "$driver_failure" | grep -qi "no login specified"; then
+            echo "::error::task failed with 'no login specified' -- the explicit login_username/login_password in this job spec never reached steamcmd, which is a driver bug, not the intended negative-test outcome"
+            exit 1
+          fi
+          if ! echo "$driver_failure" | grep -qi "authentication failed"; then
+            echo "::error::expected an authentication-failed message, got: $driver_failure"
+            exit 1
+          fi
+          echo "confirmed genuine steamcmd auth rejection, not a driver bug"
 
       - name: Render long-running launch-phase job (for recovery test)
         run: |

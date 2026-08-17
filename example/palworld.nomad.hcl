@@ -34,11 +34,9 @@ job "palworld" {
         update_on_start = true
         install_timeout = "20m"
 
-        login {
-          anonymous     = false
-          username      = "your-steam-account"
-          password_file = "local/steam_password"
-        }
+        login_anonymous     = false
+        login_username      = "your-steam-account"
+        login_password_file = "local/steam_password"
 
         launch {
           command = "local/steamapp/PalServer.sh"
