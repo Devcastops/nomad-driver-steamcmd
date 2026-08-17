@@ -11,16 +11,42 @@ import (
 // Nomad client's agent config. It provides fleet-wide defaults that a task
 // can omit and inherit from.
 //
-// DefaultLoginAnonymous is deliberately a STRING ("true"/"false"), not a
-// native bool. Two separate fixes were tried and both failed identically
-// (a nested default_login{} block, then a flat bool attribute wrapped in
-// hclspec.NewDefault) -- in every case a string attribute at this same
-// agent-config layer (steamcmd_path) decoded correctly while the bool
-// attribute came back false regardless of what the HCL actually set.
-// That's a consistent enough pattern (string: always works, bool: always
-// fails, at this specific layer) to act on directly rather than chase the
-// exact internal cause further. Parsed via strconv.ParseBool in
-// DefaultLogin() below.
+// IMPORTANT, CONFIRMED LIMITATION: values set in the agent's own
+// `nomad.hcl` for this plugin's config block have been observed NOT
+// reaching SetConfig -- the field silently falls back to whatever this
+// package's own hclspec.NewDefault literal says, regardless of what the
+// HCL actually sets. This was proven directly: logging the decoded
+// default_login_anonymous value as a quoted string + length showed a
+// genuine 5-character string "false" -- our own schema default -- even
+// though the agent config clearly set it to "true". This wasn't a decode
+// failure (a nested block and a native bool were both tried and ruled
+// out first); the field decodes fine, it just never receives the
+// explicit value. It's also why steamcmd_path appeared to "work" in
+// earlier debugging: its explicit value ("steamcmd") happened to be
+// identical to its own schema default, so a silent fallback and a
+// genuine explicit value were indistinguishable until this field, whose
+// desired value differs from its default, exposed the problem.
+//
+// This appears to be a limitation in Nomad v1.9.3's agent-config-file
+// loading for arbitrary plugin config blocks, not a bug in this package's
+// hclspec usage -- but that's inferred from behavior, not confirmed
+// against Nomad's own source or issue tracker, and is worth independently
+// verifying (and possibly reporting upstream) if it matters for your
+// deployment. The practical workaround taken here: default_login_anonymous
+// now DEFAULTS to "true" in the schema itself, so the common case (anonymous
+// login) works even though the agent config's explicit setting may not be
+// honored. If you need the plugin-level default to be a *specific*
+// non-anonymous account, don't trust this layer -- set login_username/
+// login_password explicitly on every task instead, since task-level config
+// (job specs) goes through a different Nomad code path than agent config
+// and has not been shown to have this problem (see the login_* fields on
+// TaskConfig below).
+//
+// DefaultLoginAnonymous is a STRING ("true"/"false"), not a native bool --
+// parsed via strconv.ParseBool in DefaultLogin() below. That part of the
+// investigation (nested block, then native bool, both failed identically)
+// turned out to be a red herring once the real cause was found, but the
+// string type is kept since it works and there's no reason to revert it.
 type PluginConfig struct {
 	SteamCmdPath             string `codec:"steamcmd_path"`
 	DefaultLoginAnonymousStr string `codec:"default_login_anonymous"`
@@ -60,7 +86,7 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	),
 	"default_login_anonymous": hclspec.NewDefault(
 		hclspec.NewAttr("default_login_anonymous", "string", false),
-		hclspec.NewLiteral(`"false"`),
+		hclspec.NewLiteral(`"true"`),
 	),
 	"default_login_username": hclspec.NewDefault(
 		hclspec.NewAttr("default_login_username", "string", false),

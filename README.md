@@ -110,12 +110,31 @@ plugin "steamcmd" {
 ```
 
 `default_login_anonymous` takes the *string* `"true"`/`"false"`, not a bare
-HCL boolean. This isn't a style choice -- a native bool attribute at this
-specific layer (the client agent's own `nomad.hcl`, not a job spec) was
-found to reliably decode as `false` regardless of what the HCL actually
-set, while string attributes at the same layer decoded correctly every
-time. See the `PluginConfig` doc comment in `driver/config.go` for the
-full account of what was ruled out before landing on this.
+HCL boolean -- but that's not actually the important caveat here.
+
+**⚠️ Confirmed limitation: explicit values in this agent-config block may
+not reach the plugin at all.** Debugging traced a persistent CI failure
+down to `default_login_anonymous` decoding as `"false"` -- a genuine
+5-character string, matching this schema's own default literal exactly --
+even though the agent's `nomad.hcl` clearly set it to `"true"`. The field
+isn't failing to decode; it's silently falling back to whatever default
+this driver declares, regardless of what's actually written in the config
+file. `steamcmd_path` appeared to work throughout earlier debugging only
+because its explicit value happens to equal its own default, making a
+silent fallback and a genuine explicit value indistinguishable.
+
+This looks like a limitation in Nomad v1.9.3's agent-config loading for
+plugin config blocks generally, not something specific to this driver's
+schema -- but that's inferred from observed behavior, not confirmed
+against Nomad's source or issue tracker. **If you need the plugin-level
+default to be anything other than anonymous login, don't rely on this
+block** -- set `login_username`/`login_password` explicitly on every task
+instead (`TaskConfig`'s fields go through job-spec parsing, a different
+Nomad code path that has not shown this problem). `default_login_anonymous`
+now defaults to `"true"` in the schema itself specifically so the common
+case works even if your agent config's explicit setting is silently
+ignored. See the `PluginConfig` doc comment in `driver/config.go` for the
+full investigation.
 
 ## Building
 
