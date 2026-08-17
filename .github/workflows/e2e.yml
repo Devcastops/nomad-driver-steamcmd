@@ -279,22 +279,39 @@ jobs:
 
       - name: Restart-recovery smoke test (RecoverTask)
         run: |
-          nomad job run /tmp/launch-test.nomad.hcl
+          # -detach: submit and return immediately rather than blocking in
+          # the foreground on deployment health. The earlier version of
+          # this step ran `nomad job run` in blocking mode, which exits
+          # non-zero (killing the script under `set -e`) the moment a
+          # deployment fails -- before any of our own diagnostics below
+          # ever ran. Polling allocation state ourselves means a failure
+          # always gets a full diagnostic dump instead of a bare exit.
+          nomad job run -detach /tmp/launch-test.nomad.hcl
           job_id="steamcmd-e2e-launch"
 
+          launch_alloc_id=""
+          task_state=""
           for i in $(seq 1 60); do
-            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
-            if [ "$status" = "running" ]; then
-              break
+            launch_alloc_id=$(nomad job allocs -json "$job_id" 2>/dev/null | jq -r '.[0].ID // empty')
+            if [ -n "$launch_alloc_id" ]; then
+              task_state=$(nomad alloc status -json "$launch_alloc_id" 2>/dev/null | jq -r '.TaskStates.sleeper.State // empty')
+              echo "alloc $launch_alloc_id task state: ${task_state:-none yet}"
+              if [ "$task_state" = "running" ] || [ "$task_state" = "dead" ]; then
+                break
+              fi
             fi
             sleep 5
           done
-          nomad job status "$job_id"
 
-          launch_alloc_id=$(nomad job allocs -json "$job_id" | jq -r '.[0].ID')
-          if [ -z "$launch_alloc_id" ] || [ "$launch_alloc_id" = "null" ]; then
-            echo "::error::could not determine an allocation ID for job $job_id"
-            nomad job status "$job_id"
+          if [ -z "$launch_alloc_id" ] || [ "$task_state" != "running" ]; then
+            echo "::error::launch-phase task never reached running (last state: ${task_state:-unknown})"
+            nomad job status "$job_id" || true
+            if [ -n "$launch_alloc_id" ]; then
+              nomad alloc status -verbose "$launch_alloc_id" || true
+              echo "--- stdout/stderr ---"
+              nomad alloc logs "$launch_alloc_id" sleeper || true
+              nomad alloc logs -stderr "$launch_alloc_id" sleeper || true
+            fi
             exit 1
           fi
           echo "alloc before restart: $launch_alloc_id"
@@ -315,25 +332,28 @@ jobs:
             sleep 1
           done
 
-          for i in $(seq 1 30); do
-            status=$(nomad job status -short "$job_id" 2>/dev/null | awk '/^Status/ {print $NF}')
-            echo "post-restart job status: $status"
-            if [ "$status" = "running" ]; then
-              break
-            fi
-            sleep 3
-          done
-          nomad job status "$job_id"
-
           # If RecoverTask correctly reattached by PID instead of losing
           # track of the task, the allocation should still be the same one
           # (Nomad wouldn't need to reschedule/restart it) and the task
           # should still report running.
-          task_state=$(nomad alloc status -json "$launch_alloc_id" | jq -r '.TaskStates.sleeper.State')
-          if [ "$task_state" != "running" ]; then
+          post_restart_state=""
+          for i in $(seq 1 30); do
+            post_restart_state=$(nomad alloc status -json "$launch_alloc_id" 2>/dev/null | jq -r '.TaskStates.sleeper.State // empty')
+            echo "post-restart task state: ${post_restart_state:-none yet}"
+            if [ "$post_restart_state" = "running" ]; then
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$post_restart_state" != "running" ]; then
             echo "::error::task did not remain running across a client restart -- RecoverTask likely failed to reattach"
-            nomad alloc status "$launch_alloc_id" || true
+            nomad job status "$job_id" || true
+            nomad alloc status -verbose "$launch_alloc_id" || true
+            echo "--- stdout/stderr ---"
             nomad alloc logs "$launch_alloc_id" sleeper || true
+            nomad alloc logs -stderr "$launch_alloc_id" sleeper || true
+            cat /tmp/nomad-restart.log || true
             exit 1
           fi
           echo "task still running post-restart with same allocation -- RecoverTask reattach OK"
