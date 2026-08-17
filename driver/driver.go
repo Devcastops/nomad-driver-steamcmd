@@ -98,6 +98,22 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	} else {
 		d.installSem = nil
 	}
+
+	// Diagnostic: proves at runtime (visible in the client agent's own
+	// log) whether the `plugin "steamcmd" { config { ... } }` stanza is
+	// actually reaching this driver at all, and if so, whether the
+	// nested default_login block decoded correctly. raw_config_bytes==0
+	// would mean Nomad never handed us a config block (an agent-config /
+	// plugin-loading issue upstream of this code); a nonzero byte count
+	// with default_login_anonymous==false would mean the bytes arrived
+	// but decoding the nested block is broken.
+	d.logger.Info("steamcmd plugin config loaded",
+		"raw_config_bytes", len(cfg.PluginConfig),
+		"steamcmd_path", pluginConfig.SteamCmdPath,
+		"default_login_anonymous", pluginConfig.DefaultLogin.Anonymous,
+		"default_login_username", pluginConfig.DefaultLogin.Username,
+		"max_concurrent_installs", pluginConfig.MaxConcurrent,
+	)
 	return nil
 }
 

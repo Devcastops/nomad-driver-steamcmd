@@ -96,13 +96,18 @@ jobs:
             status=$(curl -s http://127.0.0.1:4646/v1/nodes | jq -r '.[0].Drivers.steamcmd.Healthy')
             echo "driver health: $status"
             if [ "$status" = "true" ]; then
-              exit 0
+              break
             fi
             sleep 2
           done
-          echo "::error::steamcmd driver never reported healthy"
-          cat /tmp/nomad.log
-          exit 1
+          if [ "$status" != "true" ]; then
+            echo "::error::steamcmd driver never reported healthy"
+            cat /tmp/nomad.log
+            exit 1
+          fi
+
+          echo "--- steamcmd plugin config as loaded by SetConfig ---"
+          grep "steamcmd plugin config loaded" /tmp/nomad.log || echo "::warning::no SetConfig log line found -- driver may not have logged it as expected"
 
       - name: Render install-only test job
         run: |
