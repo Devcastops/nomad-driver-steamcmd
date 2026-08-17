@@ -68,3 +68,17 @@ func TestResolveLogin_FallsBackToPluginDefault(t *testing.T) {
 	got := resolveLogin(nil, def)
 	require.True(t, got.Anonymous)
 }
+
+func TestResolveLogin_NonNilButEmptyTaskLoginFallsBackToPluginDefault(t *testing.T) {
+	// Regression test: an hclspec-decoded task `login` block that was
+	// never actually set by the operator can come back as a non-nil
+	// pointer to a zero-value LoginConfig rather than a true nil. This
+	// must still fall back to the plugin's default_login, not be treated
+	// as "explicit login with no credentials" (which would error out of
+	// buildArgs with "no login specified").
+	def := LoginConfig{Anonymous: true}
+	emptyTaskLogin := &LoginConfig{}
+
+	got := resolveLogin(emptyTaskLogin, def)
+	require.True(t, got.Anonymous)
+}

@@ -93,9 +93,24 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 // resolveLogin returns the effective login to use for a task: the task's
 // own `login` block if present (full override, no field-level merge),
 // otherwise the plugin-level default.
+//
+// Deliberately does not treat "task != nil" alone as "the operator
+// specified a login" -- in practice an omitted optional `login` block has
+// been observed decoding to a non-nil pointer to a zero-value LoginConfig
+// rather than a true nil (this surfaced as install-only tasks correctly
+// falling back to the plugin's default_login while an otherwise-identical
+// task with a `launch` block did not, using the exact same driver config).
+// Checking for a meaningfully empty struct instead is robust regardless of
+// the exact decoding cause, and is arguably more sensible behavior anyway:
+// a `login {}` block with nothing set should fall back to the fleet
+// default, not be treated as "no login at all".
 func resolveLogin(task *LoginConfig, def LoginConfig) LoginConfig {
-	if task != nil {
+	if task != nil && !isZeroLogin(*task) {
 		return *task
 	}
 	return def
+}
+
+func isZeroLogin(l LoginConfig) bool {
+	return !l.Anonymous && l.Username == "" && l.Password == "" && l.PasswordFile == ""
 }
