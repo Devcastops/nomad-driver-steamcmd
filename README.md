@@ -136,10 +136,49 @@ case works even if your agent config's explicit setting is silently
 ignored. See the `PluginConfig` doc comment in `driver/config.go` for the
 full investigation.
 
+## Installing a release
+
+Every tag matching `vX.Y.Z` triggers `.github/workflows/release.yml`, which
+builds and publishes binaries for both `linux/amd64` (the main devcastops
+node) and `linux/arm64` (the Raspberry Pi node) to GitHub Releases.
+
+```sh
+# on the target Nomad client node:
+curl -fsSLO https://github.com/Devcastops/nomad-driver-steamcmd/releases/download/vX.Y.Z/nomad-driver-steamcmd_vX.Y.Z_linux_amd64.tar.gz
+curl -fsSLO https://github.com/Devcastops/nomad-driver-steamcmd/releases/download/vX.Y.Z/nomad-driver-steamcmd_vX.Y.Z_linux_amd64.tar.gz.sha256
+sha256sum -c nomad-driver-steamcmd_vX.Y.Z_linux_amd64.tar.gz.sha256
+
+tar -xzf nomad-driver-steamcmd_vX.Y.Z_linux_amd64.tar.gz
+sudo mv nomad-driver-steamcmd_vX.Y.Z_linux_amd64/nomad-driver-steamcmd \
+  /path/to/plugin_dir/nomad-driver-steamcmd
+sudo systemctl restart nomad   # or however you restart the client agent
+```
+
+Swap `linux_amd64` for `linux_arm64` on the Pi. `nomad node status -verbose <node>`
+(or `curl :4646/v1/agent/health`) will show the loaded driver version
+matching the tag once the client picks it back up — the plugin's own
+`PluginInfo` reports whatever version was stamped into the binary at build
+time (see `pluginVersion` in `driver/driver.go`), so a mismatch there means
+the wrong binary landed on that node.
+
+### Cutting a release
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+That's the whole process — the workflow handles the rest. To test a build
+locally first (e.g. directly on the Pi) without waiting on CI:
+
+```sh
+make release-build VERSION=v0.2.0   # -> dist/release/nomad-driver-steamcmd_v0.2.0_linux_{amd64,arm64}
+```
+
 ## Building
 
 ```sh
-make build      # -> dist/plugins/nomad-driver-steamcmd
+make build      # -> dist/plugins/nomad-driver-steamcmd, version-stamped from `git describe`
 make test       # unit tests (no Nomad/steamcmd required)
 make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
 ```

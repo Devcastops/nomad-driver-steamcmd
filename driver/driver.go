@@ -16,11 +16,16 @@ import (
 )
 
 const (
-	pluginName    = "steamcmd"
-	pluginVersion = "v0.1.0"
+	pluginName = "steamcmd"
 
 	fingerprintPeriod = 30 * time.Second
 )
+
+// pluginVersion is overridden at release-build time via
+// `-ldflags "-X github.com/byteford/nomad-driver-steamcmd/driver.pluginVersion=vX.Y.Z"`
+// (see .github/workflows/release.yml). Left as this dev default for local
+// builds (`make build`) and CI runs that don't inject a real tag.
+var pluginVersion = "v0.0.0-dev"
 
 var PluginInfo = &base.PluginInfoResponse{
 	Type:              base.PluginTypeDriver,
