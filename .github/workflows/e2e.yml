@@ -99,13 +99,26 @@ jobs:
           sudo -E nohup nomad agent \
             -config=/tmp/nomad-agent.hcl \
             > /tmp/nomad.log 2>&1 &
-          for i in $(seq 1 30); do
+
+          up=false
+          for i in $(seq 1 45); do
             if curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null; then
               echo "nomad is up"
+              up=true
               break
             fi
             sleep 1
           done
+
+          if [ "$up" != "true" ]; then
+            echo "::error::nomad agent never became healthy within the timeout"
+            echo "--- process status ---"
+            ps aux | grep -i nomad || true
+            echo "--- /tmp/nomad.log ---"
+            cat /tmp/nomad.log || true
+            exit 1
+          fi
+
           curl -sf http://127.0.0.1:4646/v1/status/leader
 
       - name: Confirm driver fingerprinted healthy
