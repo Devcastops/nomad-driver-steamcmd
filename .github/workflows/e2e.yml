@@ -62,6 +62,18 @@ jobs:
           data_dir  = "/tmp/nomad-data"
           bind_addr = "127.0.0.1"
 
+          # Required outside -dev mode: unlike dev mode, which picks safe
+          # advertise defaults automatically, a real server/client config
+          # refuses to silently default advertise addresses to localhost
+          # ("Defaulting advertise to localhost is unsafe") and requires
+          # them set explicitly, even for an intentionally local single
+          # node like this one.
+          advertise {
+            http = "127.0.0.1"
+            rpc  = "127.0.0.1"
+            serf = "127.0.0.1"
+          }
+
           # Explicit server+client config with real raft persistence,
           # instead of `nomad agent -dev`. Dev mode always boots a fresh,
           # in-memory single-node cluster with no persisted server state --
