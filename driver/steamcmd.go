@@ -57,8 +57,9 @@ func buildArgs(cfg TaskConfig, login LoginConfig, installDir string) ([]string, 
 		}
 		args = append(args, "+login", login.Username, pw)
 	default:
-		return nil, fmt.Errorf("steamcmd: no login specified (set login.anonymous, login.password, or login.password_file; " +
-			"or configure a client-level default_login in the plugin config)")
+		return nil, fmt.Errorf("steamcmd: no login specified (set login_anonymous, login_username/login_password, " +
+			"or login_password_file on the task; or configure default_login_anonymous/default_login_username on the " +
+			"plugin's client config)")
 	}
 
 	updateArgs := []string{"+app_update", cfg.AppID}

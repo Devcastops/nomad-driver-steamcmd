@@ -9,13 +9,16 @@ import (
 // Nomad client's agent config. It provides fleet-wide defaults that a task
 // can omit and inherit from.
 //
-// Login fields are intentionally FLAT (default_login_anonymous, not a
-// nested default_login{} block). A nested hclspec.NewBlock here was
-// observed to decode incorrectly at the agent-config layer specifically
-// (top-level flat attributes like steamcmd_path decoded fine; the nested
-// block's contents were silently lost, leaving every field at its zero
-// value even when the HCL clearly set them). Flattening sidesteps that
-// rather than depending on a mechanism that's proven broken in this path.
+// Login fields are flat (default_login_anonymous, not a nested
+// default_login{} block) -- a nested hclspec.NewBlock was first suspected
+// here, but was disproven: a genuinely flat bool attribute
+// (default_login_anonymous) was ALSO observed decoding to false despite
+// the agent config clearly setting it true, while a flat *string* attr
+// (steamcmd_path) decoded correctly. The one structural difference
+// between them was that steamcmd_path is wrapped in hclspec.NewDefault(...)
+// and default_login_anonymous was not. Every optional attribute below is
+// now explicitly wrapped in NewDefault to match the one field proven to
+// work, regardless of the exact underlying mechanism.
 type PluginConfig struct {
 	SteamCmdPath             string `codec:"steamcmd_path"`
 	DefaultLoginAnonymous    bool   `codec:"default_login_anonymous"`
@@ -36,31 +39,45 @@ func (p PluginConfig) DefaultLogin() LoginConfig {
 	}
 }
 
-// configSpec is the hclspec for the plugin-level config block.
+// configSpec is the hclspec for the plugin-level config block. Every
+// optional attribute is wrapped in hclspec.NewDefault -- see the
+// PluginConfig doc comment for why.
 var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"steamcmd_path": hclspec.NewDefault(
 		hclspec.NewAttr("steamcmd_path", "string", false),
 		hclspec.NewLiteral(`"steamcmd"`),
 	),
-	"install_root": hclspec.NewAttr("install_root", "string", false),
+	"install_root": hclspec.NewDefault(
+		hclspec.NewAttr("install_root", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
 	"max_concurrent_installs": hclspec.NewDefault(
 		hclspec.NewAttr("max_concurrent_installs", "number", false),
 		hclspec.NewLiteral("0"),
 	),
-	"default_login_anonymous":     hclspec.NewAttr("default_login_anonymous", "bool", false),
-	"default_login_username":      hclspec.NewAttr("default_login_username", "string", false),
-	"default_login_password":      hclspec.NewAttr("default_login_password", "string", false),
-	"default_login_password_file": hclspec.NewAttr("default_login_password_file", "string", false),
+	"default_login_anonymous": hclspec.NewDefault(
+		hclspec.NewAttr("default_login_anonymous", "bool", false),
+		hclspec.NewLiteral("false"),
+	),
+	"default_login_username": hclspec.NewDefault(
+		hclspec.NewAttr("default_login_username", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"default_login_password": hclspec.NewDefault(
+		hclspec.NewAttr("default_login_password", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"default_login_password_file": hclspec.NewDefault(
+		hclspec.NewAttr("default_login_password_file", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
 })
 
 // TaskConfig is the per-task configuration set in a job spec's
 // `driver = "steamcmd"` task's `config { ... }` block.
 //
 // Login fields are flat here too (login_anonymous, not a nested login{}
-// block), for the same reason as PluginConfig above -- and because a task
-// config with a `launch` block sibling was the exact case where the
-// nested `login` block was observed decoding incorrectly, so both layers
-// get the same fix rather than leaving one on an unproven mechanism.
+// block), for the same reason as PluginConfig above.
 type TaskConfig struct {
 	AppID             string        `codec:"app_id"`
 	InstallDir        string        `codec:"install_dir"`
@@ -99,12 +116,6 @@ type LoginConfig struct {
 
 // LaunchConfig describes the process to exec once install/update completes.
 // If nil, the task is install-only and exits after steamcmd finishes.
-//
-// Left as a nested hclspec block for now, unlike login above: its presence
-// (launch_is_nil) has been observed decoding correctly, and its contents
-// haven't yet been exercised far enough by real runs to know whether they
-// have the same problem. If a run gets past login and Launch.Command
-// turns out empty/wrong, flatten this the same way.
 type LaunchConfig struct {
 	Command string            `codec:"command"`
 	Args    []string          `codec:"args"`
@@ -113,28 +124,62 @@ type LaunchConfig struct {
 
 var launchSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"command": hclspec.NewAttr("command", "string", true),
-	"args":    hclspec.NewAttr("args", "list(string)", false),
-	"env":     hclspec.NewAttr("env", "map(string)", false),
+	"args": hclspec.NewDefault(
+		hclspec.NewAttr("args", "list(string)", false),
+		hclspec.NewLiteral("[]"),
+	),
+	"env": hclspec.NewDefault(
+		hclspec.NewAttr("env", "map(string)", false),
+		hclspec.NewLiteral("{}"),
+	),
 })
 
 // taskConfigSpec is the hclspec Nomad uses to validate/decode a task's
-// `config` block for this driver.
+// `config` block for this driver. Every optional attribute is wrapped in
+// hclspec.NewDefault -- see the PluginConfig doc comment for why.
 var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"app_id": hclspec.NewAttr("app_id", "string", true),
 	"install_dir": hclspec.NewDefault(
 		hclspec.NewAttr("install_dir", "string", false),
 		hclspec.NewLiteral(`"local/steamapp"`),
 	),
-	"beta":                hclspec.NewAttr("beta", "string", false),
-	"beta_password":       hclspec.NewAttr("beta_password", "string", false),
-	"validate":            hclspec.NewAttr("validate", "bool", false),
-	"update_on_start":     hclspec.NewAttr("update_on_start", "bool", false),
-	"install_timeout":     hclspec.NewAttr("install_timeout", "string", false),
-	"login_anonymous":     hclspec.NewAttr("login_anonymous", "bool", false),
-	"login_username":      hclspec.NewAttr("login_username", "string", false),
-	"login_password":      hclspec.NewAttr("login_password", "string", false),
-	"login_password_file": hclspec.NewAttr("login_password_file", "string", false),
-	"launch":              hclspec.NewBlock("launch", false, launchSpec),
+	"beta": hclspec.NewDefault(
+		hclspec.NewAttr("beta", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"beta_password": hclspec.NewDefault(
+		hclspec.NewAttr("beta_password", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"validate": hclspec.NewDefault(
+		hclspec.NewAttr("validate", "bool", false),
+		hclspec.NewLiteral("false"),
+	),
+	"update_on_start": hclspec.NewDefault(
+		hclspec.NewAttr("update_on_start", "bool", false),
+		hclspec.NewLiteral("false"),
+	),
+	"install_timeout": hclspec.NewDefault(
+		hclspec.NewAttr("install_timeout", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"login_anonymous": hclspec.NewDefault(
+		hclspec.NewAttr("login_anonymous", "bool", false),
+		hclspec.NewLiteral("false"),
+	),
+	"login_username": hclspec.NewDefault(
+		hclspec.NewAttr("login_username", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"login_password": hclspec.NewDefault(
+		hclspec.NewAttr("login_password", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"login_password_file": hclspec.NewDefault(
+		hclspec.NewAttr("login_password_file", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"launch": hclspec.NewBlock("launch", false, launchSpec),
 })
 
 // resolveLogin returns the effective login to use for a task: the task's
