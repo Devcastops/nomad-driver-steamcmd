@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  NOMAD_VERSION: "2.0.5"
+  NOMAD_VERSION: "1.10.0"
   # Half-Life Dedicated Server: small (~100-200MB), anonymous-downloadable,
   # well-known stable choice for steamcmd smoke tests. Swap via workflow
   # dispatch input if you want to test against a different app.
