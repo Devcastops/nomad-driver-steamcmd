@@ -129,28 +129,32 @@ for podman. Since podman's tested Nomad version isn't known, and the
 Nomad module here was previously pinned to v1.9.3, the working theory is
 a version-specific regression rather than anything in this schema. The
 module (and the version `e2e.yml` tests against) is now pinned to
-v2.0.5 to test that theory -- if the diagnostic log line in `SetConfig`
+v1.10.0 to test that theory -- if the diagnostic log line in `SetConfig`
 still shows the field falling back to its default on that version, the
 theory is wrong and this needs a different investigation (possibly a
 dependency-version mismatch in the msgpack library `base.MsgPackDecode`
 uses, since this repo has never had a committed, pinned `go.sum`). See the
 `PluginConfig` doc comment in `driver/config.go` for the full account.
 
-**Note on v2.0.5 specifically:** this is a much bigger jump than
-intended -- Nomad's `v1.10.x`/`v1.11.x` patch releases beyond `v1.10.0`
-turned out to be Enterprise-only with no public tag (confirmed from
-GitHub's own release listing), so `v2.0.5` is the actual latest *public*
-release available to pin against, not a deliberate choice to cross the
-major version boundary. It has at least one confirmed breaking change in
-`plugin/drivers` (`DriverNetwork.Hash` removed) -- this driver doesn't use
-that method, so it shouldn't matter, but it's worth knowing this jump
-skipped the entire `1.10`/`1.11` line rather than landing just one or two
-versions ahead of your real `1.9.3` client. Treat `v2.0.5` here as purely
-diagnostic (does a newer Nomad fix the agent-config bug at all?), not a
-recommendation to run this driver against `v2.0.5` in devcastops -- your
-client is still `1.9.3`, and the version mismatch between the SDK this is
-built against and your actual agent is a separate thing worth resolving
-once the underlying bug is understood.
+**Note on why this is only v1.10.0, not something newer:** every
+`v1.10.x`/`v1.11.x` patch release beyond `v1.10.0` turned out to be
+Enterprise-only with no public tag (confirmed from GitHub's own release
+listing) -- `v1.10.0` is the last plain-public tag on that line.
+`v2.0.5` (the actual latest public release, on Nomad's newer release
+line) was tried first and is a dead end for now: Go's module system
+requires a v2+ tag's own `go.mod` to either declare `module
+.../nomad/v2` or have no `go.mod` at all (the `+incompatible`
+fallback) -- Nomad's `v2.0.5` tag has a `go.mod` that still declares
+plain `github.com/hashicorp/nomad`, so it satisfies neither mechanism
+and can't be consumed as a normal dependency at all. That's a real
+inconsistency in how that tag was published, not something fixable
+from this side. So `v1.10.0` is a modest bump from `1.9.3`, not the
+"latest available" bump originally intended -- treat it as purely
+diagnostic (does a newer Nomad fix the agent-config bug at all?), not
+a recommendation to run this driver against `v1.10.0` in devcastops.
+Your client is still `1.9.3`, and reconciling the SDK version this is
+built against with your actual agent version is a separate concern
+from the bug investigation itself.
 
 If you hit this on your own cluster: **don't rely on this block** for
 anything where the desired value differs from its schema default --
@@ -214,7 +218,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
 > runner with unrestricted network access and does the real
 > `go mod tidy && go build && go test` — treat a green CI run as the
 > actual first compilation, and expect to fix any real API-surface
-> mismatches against `github.com/hashicorp/nomad@v2.0.5`'s current
+> mismatches against `github.com/hashicorp/nomad@v1.10.0`'s current
 > `plugins/drivers` interface that a from-memory scaffold can't
    guarantee against (see `driver/lifecycle.go`, `driver/driver.go`).
 

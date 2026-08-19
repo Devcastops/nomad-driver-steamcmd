@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/hashicorp/go-hclog v1.6.3
-	github.com/hashicorp/nomad v2.0.5+incompatible
+	github.com/hashicorp/nomad v1.10.0
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/stretchr/testify v1.9.0
 )
