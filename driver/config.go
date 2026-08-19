@@ -32,10 +32,10 @@ import (
 // known and this module was previously pinned to v1.9.3, the working
 // theory is a version-specific Nomad regression rather than anything
 // here. The module (and the Nomad binary version `.github/workflows/e2e.yml`
-// tests against) is now pinned to v1.10.14 specifically to test that
+// tests against) is now pinned to v2.0.5 specifically to test that
 // theory -- check the "steamcmd plugin config loaded" diagnostic log line
 // in SetConfig on that version before assuming this is fixed. If it's
-// still falling back to defaults on v1.10.14, the theory is wrong and the
+// still falling back to defaults on v2.0.5, the theory is wrong and the
 // next thing to check is a dependency-version mismatch in whichever
 // msgpack library base.MsgPackDecode resolves to, since this repo has
 // never had a committed, pinned go.sum.
