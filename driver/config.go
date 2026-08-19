@@ -11,36 +11,41 @@ import (
 // Nomad client's agent config. It provides fleet-wide defaults that a task
 // can omit and inherit from.
 //
-// IMPORTANT, CONFIRMED LIMITATION: values set in the agent's own
-// `nomad.hcl` for this plugin's config block have been observed NOT
-// reaching SetConfig -- the field silently falls back to whatever this
-// package's own hclspec.NewDefault literal says, regardless of what the
-// HCL actually sets. This was proven directly: logging the decoded
-// default_login_anonymous value as a quoted string + length showed a
-// genuine 5-character string "false" -- our own schema default -- even
-// though the agent config clearly set it to "true". This wasn't a decode
-// failure (a nested block and a native bool were both tried and ruled
-// out first); the field decodes fine, it just never receives the
-// explicit value. It's also why steamcmd_path appeared to "work" in
-// earlier debugging: its explicit value ("steamcmd") happened to be
-// identical to its own schema default, so a silent fallback and a
-// genuine explicit value were indistinguishable until this field, whose
-// desired value differs from its default, exposed the problem.
+// SUSPECTED VERSION-SPECIFIC NOMAD BUG, NOT AN ISSUE WITH THIS SCHEMA:
+// explicit values set in the agent's own `nomad.hcl` for this block have
+// been observed NOT reaching SetConfig on Nomad v1.9.3 -- the field
+// silently falls back to whatever this package's own hclspec.NewDefault
+// literal says, regardless of what the HCL actually sets. Proven directly
+// via a diagnostic log (default_login_anonymous decoded as a genuine
+// 5-character string "false" -- exactly this schema's own default --
+// even though the agent config clearly set it to "true"), and reproduced
+// on two independent machines (CI and a real client), fully isolated in
+// its own config file with no other plugin blocks nearby.
 //
-// This appears to be a limitation in Nomad v1.9.3's agent-config-file
-// loading for arbitrary plugin config blocks, not a bug in this package's
-// hclspec usage -- but that's inferred from behavior, not confirmed
-// against Nomad's own source or issue tracker, and is worth independently
-// verifying (and possibly reporting upstream) if it matters for your
-// deployment. The practical workaround taken here: default_login_anonymous
-// now DEFAULTS to "true" in the schema itself, so the common case (anonymous
-// login) works even though the agent config's explicit setting may not be
-// honored. If you need the plugin-level default to be a *specific*
-// non-anonymous account, don't trust this layer -- set login_username/
-// login_password explicitly on every task instead, since task-level config
-// (job specs) goes through a different Nomad code path than agent config
-// and has not been shown to have this problem (see the login_* fields on
-// TaskConfig below).
+// This is confirmed NOT to be a bug in this package's hclspec usage: the
+// exact same SetConfig/ConfigSchema/PluginInfo wiring was compared
+// line-by-line against hashicorp/nomad-driver-podman's current source (a
+// real, actively-maintained external plugin using the identical
+// `base.MsgPackDecode` mechanism), including a bare unwrapped-string
+// attribute (socket_path) documented as working for podman -- our schema
+// matches that pattern exactly. Since podman's tested Nomad version isn't
+// known and this module was previously pinned to v1.9.3, the working
+// theory is a version-specific Nomad regression rather than anything
+// here. The module (and the Nomad binary version `.github/workflows/e2e.yml`
+// tests against) is now pinned to v1.10.14 specifically to test that
+// theory -- check the "steamcmd plugin config loaded" diagnostic log line
+// in SetConfig on that version before assuming this is fixed. If it's
+// still falling back to defaults on v1.10.14, the theory is wrong and the
+// next thing to check is a dependency-version mismatch in whichever
+// msgpack library base.MsgPackDecode resolves to, since this repo has
+// never had a committed, pinned go.sum.
+//
+// Confirmed reliable regardless: TaskConfig's login_* fields (job-spec
+// parsing, a different Nomad code path) -- proven with real credentials
+// against real steamcmd auth rejection, not just a decode check. If you
+// need the plugin-level default to be a *specific* non-anonymous account
+// and can't confirm this block works on your version, set
+// login_username/login_password explicitly on every task instead.
 //
 // DefaultLoginAnonymous is a STRING ("true"/"false"), not a native bool --
 // parsed via strconv.ParseBool in DefaultLogin() below. That part of the

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  NOMAD_VERSION: "1.9.3"
+  NOMAD_VERSION: "1.10.14"
   # Half-Life Dedicated Server: small (~100-200MB), anonymous-downloadable,
   # well-known stable choice for steamcmd smoke tests. Swap via workflow
   # dispatch input if you want to test against a different app.
@@ -97,7 +97,23 @@ jobs:
           plugin "steamcmd" {
             config {
               steamcmd_path = "steamcmd"
+
+              # These two intentionally differ from their own schema
+              # defaults (steamcmd_path and default_login_anonymous above
+              # do NOT -- that's exactly the blind spot that let the
+              # agent-config forwarding bug hide for so long: you can't
+              # tell "explicit value honored" from "silently fell back to
+              # a default that happens to match" unless they differ).
+              # default_login_username has no functional effect here
+              # (default_login_anonymous=true means it's never used to
+              # actually log in), and max_concurrent_installs=2 just
+              # limits install concurrency -- both safe to set to
+              # non-default values purely to prove forwarding works.
+              # See "Assert plugin-level agent config values are actually
+              # forwarded" below.
               default_login_anonymous = "true"
+              default_login_username  = "e2e-config-canary"
+              max_concurrent_installs = 2
             }
           }
           EOF
@@ -151,6 +167,38 @@ jobs:
 
           echo "--- steamcmd plugin config as loaded by SetConfig ---"
           grep "steamcmd plugin config loaded" /tmp/nomad.log || echo "::warning::no SetConfig log line found -- driver may not have logged it as expected"
+
+      - name: Assert plugin-level agent config values are actually forwarded (regression test)
+        run: |
+          # This is the actual regression test for the agent-config
+          # forwarding bug this driver spent a long time chasing. It's
+          # NOT sufficient to check steamcmd_path or default_login_anonymous
+          # here -- both are set to their own schema defaults in this
+          # workflow's agent config, so they'd report success identically
+          # whether forwarding is genuinely fixed or still silently
+          # falling back to defaults. default_login_username and
+          # max_concurrent_installs are set to values that differ from
+          # their defaults specifically so this test can tell the
+          # difference.
+          config_line=$(grep "steamcmd plugin config loaded" /tmp/nomad.log | tail -1)
+          if [ -z "$config_line" ]; then
+            echo "::error::no 'steamcmd plugin config loaded' log line found -- cannot verify config forwarding"
+            exit 1
+          fi
+
+          if ! echo "$config_line" | grep -q 'e2e-config-canary'; then
+            echo "::error::default_login_username did not forward correctly -- agent-config values are being silently dropped/defaulted (see PluginConfig doc comment in driver/config.go)"
+            echo "$config_line"
+            exit 1
+          fi
+
+          if ! echo "$config_line" | grep -q 'max_concurrent_installs=2'; then
+            echo "::error::max_concurrent_installs did not forward correctly -- agent-config values are being silently dropped/defaulted (see PluginConfig doc comment in driver/config.go)"
+            echo "$config_line"
+            exit 1
+          fi
+
+          echo "confirmed: agent-level plugin config values that differ from their schema defaults ARE reaching SetConfig correctly on this Nomad version"
 
       - name: Render install-only test job
         run: |

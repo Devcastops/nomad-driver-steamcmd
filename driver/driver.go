@@ -94,6 +94,7 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	if pluginConfig.SteamCmdPath == "" {
 		pluginConfig.SteamCmdPath = "steamcmd"
 	}
+
 	d.config = pluginConfig
 	if cfg.AgentConfig != nil {
 		d.nomadConfig = cfg.AgentConfig.Driver
@@ -112,7 +113,9 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	// enough (quoted vs bare) that a bare "false" here has previously
 	// been ambiguous between "this is still a bool" and "this is a
 	// string whose actual content is the text false". %q removes that
-	// ambiguity outright.
+	// ambiguity outright. Kept in place while the Nomad-version bump
+	// (see README) is being verified -- this is what will show whether
+	// it's actually fixed.
 	d.logger.Info("steamcmd plugin config loaded",
 		"raw_config_bytes", len(cfg.PluginConfig),
 		"steamcmd_path", pluginConfig.SteamCmdPath,

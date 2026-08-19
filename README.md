@@ -112,29 +112,35 @@ plugin "steamcmd" {
 `default_login_anonymous` takes the *string* `"true"`/`"false"`, not a bare
 HCL boolean -- but that's not actually the important caveat here.
 
-**⚠️ Confirmed limitation: explicit values in this agent-config block may
-not reach the plugin at all.** Debugging traced a persistent CI failure
-down to `default_login_anonymous` decoding as `"false"` -- a genuine
-5-character string, matching this schema's own default literal exactly --
-even though the agent's `nomad.hcl` clearly set it to `"true"`. The field
-isn't failing to decode; it's silently falling back to whatever default
-this driver declares, regardless of what's actually written in the config
-file. `steamcmd_path` appeared to work throughout earlier debugging only
-because its explicit value happens to equal its own default, making a
-silent fallback and a genuine explicit value indistinguishable.
+**⚠️ Suspected version-specific Nomad bug: explicit values in this
+agent-config block may not reach the plugin at all on some Nomad
+versions.** Debugging traced a persistent failure (reproduced both in CI
+and on a real client) down to `default_login_anonymous` decoding as
+`"false"` -- a genuine string, matching this schema's own default literal
+exactly -- even though `nomad.hcl` clearly set it to `"true"`. This was
+isolated thoroughly: not a nested-block issue, not a bool-vs-string issue,
+not a `NewDefault` issue, not a file-merge or block-adjacency issue, and
+not this driver's own `SetConfig`/`ConfigSchema` pattern -- that code was
+compared line-by-line against `hashicorp/nomad-driver-podman`'s current
+source (a real, actively-maintained external plugin using the exact same
+`config{}` mechanism) and matches it exactly, including a bare
+unwrapped-string attribute (`socket_path`) that's documented as working
+for podman. Since podman's tested Nomad version isn't known, and the
+Nomad module here was previously pinned to v1.9.3, the working theory is
+a version-specific regression rather than anything in this schema. The
+module (and the version `e2e.yml` tests against) is now pinned to
+v1.10.14 to test that theory -- if the diagnostic log line in `SetConfig`
+still shows the field falling back to its default on that version, the
+theory is wrong and this needs a different investigation (possibly a
+dependency-version mismatch in the msgpack library `base.MsgPackDecode`
+uses, since this repo has never had a committed, pinned `go.sum`). See the
+`PluginConfig` doc comment in `driver/config.go` for the full account.
 
-This looks like a limitation in Nomad v1.9.3's agent-config loading for
-plugin config blocks generally, not something specific to this driver's
-schema -- but that's inferred from observed behavior, not confirmed
-against Nomad's source or issue tracker. **If you need the plugin-level
-default to be anything other than anonymous login, don't rely on this
-block** -- set `login_username`/`login_password` explicitly on every task
-instead (`TaskConfig`'s fields go through job-spec parsing, a different
-Nomad code path that has not shown this problem). `default_login_anonymous`
-now defaults to `"true"` in the schema itself specifically so the common
-case works even if your agent config's explicit setting is silently
-ignored. See the `PluginConfig` doc comment in `driver/config.go` for the
-full investigation.
+If you hit this on your own cluster: **don't rely on this block** for
+anything where the desired value differs from its schema default --
+`login_username`/`login_password` on the task itself (`TaskConfig`'s
+fields, via job-spec parsing) have been directly proven reliable, using
+real credentials, in a way this agent-config block has not.
 
 ## Installing a release
 
@@ -192,7 +198,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
 > runner with unrestricted network access and does the real
 > `go mod tidy && go build && go test` — treat a green CI run as the
 > actual first compilation, and expect to fix any real API-surface
-> mismatches against `github.com/hashicorp/nomad@v1.9.3`'s current
+> mismatches against `github.com/hashicorp/nomad@v1.10.14`'s current
 > `plugins/drivers` interface that a from-memory scaffold can't
    guarantee against (see `driver/lifecycle.go`, `driver/driver.go`).
 
