@@ -49,10 +49,12 @@ supervising the resulting binary as the task's tracked process.
   and `login.password_file` are plain fields; how the value gets there
   (Vault via `template`, Nomad variables, or a literal) is entirely up to
   the job author. The driver has no secrets-backend dependency.
-- **Client-level default login.** A `plugin "steamcmd" { config { ... } }`
-  stanza in the Nomad agent config can set a fleet-wide `default_login`
-  (typically `anonymous = true`). A task's own `login` block, if present,
-  is a full override — no field-level merging with the default in v1.
+- **Client-level default login.** A `plugin "nomad-driver-steamcmd" { config { ... } }`
+  stanza in the Nomad agent config (block label matches the plugin binary's
+  filename, not `driver = "steamcmd"`'s internal name -- see the Plugin
+  config reference below) can set a fleet-wide `default_login_anonymous`.
+  A task's own `login_*` fields, if any are set, are a full override — no
+  field-level merging with the default in v1.
 - **Cron-based restarts are intentionally NOT a driver feature.** Use
   Nomad's own `periodic` batch-job stanza to call
   `POST /v1/allocation/:id/restart` on a schedule instead. Keeps the
@@ -95,8 +97,20 @@ the full note.
 
 ## Plugin (client agent) config reference
 
+⚠️ The block label must be the plugin **binary's filename** in
+`plugin_dir` (`nomad-driver-steamcmd`), not the driver's internal
+self-reported name (`steamcmd`, used in `driver = "steamcmd"` in job
+specs). Get this wrong and Nomad silently skips loading the plugin
+entirely -- it won't appear in the agent's own "detected plugin" log at
+all. This is a *separate* issue from the agent-config-forwarding
+investigation above, discovered only while testing against a newer
+Nomad version -- on the older Nomad this driver has actually been run
+against, the plugin loaded fine despite the same label, so this
+filename-matching enforcement appears to be new/stricter in later
+Nomad releases, not the explanation for the original bug.
+
 ```hcl
-plugin "steamcmd" {
+plugin "nomad-driver-steamcmd" {
   config {
     steamcmd_path                = "steamcmd" # must be on the node's PATH
     install_root                 = ""         # reserved, unused in v1

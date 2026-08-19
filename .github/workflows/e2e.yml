@@ -94,7 +94,20 @@ jobs:
 
           plugin_dir = "${GITHUB_WORKSPACE}/dist/plugins"
 
-          plugin "steamcmd" {
+          # The plugin block's label must match the plugin BINARY's
+          # filename in plugin_dir ("nomad-driver-steamcmd"), NOT the
+          # driver's self-reported PluginInfo.Name ("steamcmd") -- these
+          # are two different things. Nomad docs: "The name of the plugin
+          # is the plugin's executable name relative to plugin_dir." A
+          # driver's *internal* registered name (used in `driver =
+          # "steamcmd"` in job specs, and in `Drivers.steamcmd.Healthy`
+          # health checks below) only gets set once Nomad actually spawns
+          # the binary and queries it over RPC -- which never happens if
+          # this label doesn't match the filename first. Confirmed the
+          # hard way: with a mismatched label, the driver was completely
+          # absent from Nomad's own "detected plugin" log list, not
+          # loaded-with-wrong-config as previously assumed.
+          plugin "nomad-driver-steamcmd" {
             config {
               steamcmd_path = "steamcmd"
 
