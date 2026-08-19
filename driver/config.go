@@ -1,60 +1,34 @@
 package steamcmd
 
 import (
-	"strconv"
-
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 )
 
 // PluginConfig is the client-level (agent-wide) configuration for the
-// plugin, set via a `plugin "steamcmd" { config { ... } }` stanza in the
-// Nomad client's agent config. It provides fleet-wide defaults that a task
-// can omit and inherit from.
+// plugin, set via a `plugin "nomad-driver-steamcmd" { config { ... } }`
+// stanza in the Nomad client's agent config. It provides fleet-wide
+// defaults that a task can omit and inherit from.
 //
-// SUSPECTED VERSION-SPECIFIC NOMAD BUG, NOT AN ISSUE WITH THIS SCHEMA:
-// explicit values set in the agent's own `nomad.hcl` for this block have
-// been observed NOT reaching SetConfig on Nomad v1.9.3 -- the field
-// silently falls back to whatever this package's own hclspec.NewDefault
-// literal says, regardless of what the HCL actually sets. Proven directly
-// via a diagnostic log (default_login_anonymous decoded as a genuine
-// 5-character string "false" -- exactly this schema's own default --
-// even though the agent config clearly set it to "true"), and reproduced
-// on two independent machines (CI and a real client), fully isolated in
-// its own config file with no other plugin blocks nearby.
-//
-// This is confirmed NOT to be a bug in this package's hclspec usage: the
-// exact same SetConfig/ConfigSchema/PluginInfo wiring was compared
-// line-by-line against hashicorp/nomad-driver-podman's current source (a
-// real, actively-maintained external plugin using the identical
-// `base.MsgPackDecode` mechanism), including a bare unwrapped-string
-// attribute (socket_path) documented as working for podman -- our schema
-// matches that pattern exactly. Since podman's tested Nomad version isn't
-// known and this module was previously pinned to v1.9.3, the working
-// theory is a version-specific Nomad regression rather than anything
-// here. The module (and the Nomad binary version `.github/workflows/e2e.yml`
-// tests against) is now pinned to v1.10.0 specifically to test that
-// theory -- check the "steamcmd plugin config loaded" diagnostic log line
-// in SetConfig on that version before assuming this is fixed. If it's
-// still falling back to defaults on v1.10.0, the theory is wrong and the
-// next thing to check is a dependency-version mismatch in whichever
-// msgpack library base.MsgPackDecode resolves to, since this repo has
-// never had a committed, pinned go.sum.
-//
-// Confirmed reliable regardless: TaskConfig's login_* fields (job-spec
-// parsing, a different Nomad code path) -- proven with real credentials
-// against real steamcmd auth rejection, not just a decode check. If you
-// need the plugin-level default to be a *specific* non-anonymous account
-// and can't confirm this block works on your version, set
-// login_username/login_password explicitly on every task instead.
-//
-// DefaultLoginAnonymous is a STRING ("true"/"false"), not a native bool --
-// parsed via strconv.ParseBool in DefaultLogin() below. That part of the
-// investigation (nested block, then native bool, both failed identically)
-// turned out to be a red herring once the real cause was found, but the
-// string type is kept since it works and there's no reason to revert it.
+// HISTORY: explicit values in this block were observed not reaching
+// SetConfig at all on Nomad v1.9.3 -- fields silently fell back to their
+// hclspec.NewDefault literal regardless of what nomad.hcl actually set.
+// This was extensively isolated (not a nested-block issue, not a
+// bool-vs-string issue, not a NewDefault issue, not file-merge/adjacency,
+// not this driver's own SetConfig/ConfigSchema pattern -- compared
+// line-by-line against hashicorp/nomad-driver-podman's current source and
+// matches it exactly) and turned out to be a genuine version-specific
+// Nomad regression: a canary test (a field set to a value deliberately
+// different from its own default) confirmed forwarding works correctly
+// on Nomad v1.10.0. DefaultLoginAnonymous was temporarily a string
+// ("true"/"false") during that investigation on the theory that bools
+// specifically were affected -- confirmed a red herring once the real
+// (version-specific) cause was found, so it's back to a native bool.
+// See driver/config_test.go and .github/workflows/e2e.yml's "Assert
+// plugin-level agent config values are actually forwarded" step, which
+// exercises this on every CI run going forward as a regression guard.
 type PluginConfig struct {
 	SteamCmdPath             string `codec:"steamcmd_path"`
-	DefaultLoginAnonymousStr string `codec:"default_login_anonymous"`
+	DefaultLoginAnonymous    bool   `codec:"default_login_anonymous"`
 	DefaultLoginUsername     string `codec:"default_login_username"`
 	DefaultLoginPassword     string `codec:"default_login_password"`
 	DefaultLoginPasswordFile string `codec:"default_login_password_file"`
@@ -64,18 +38,15 @@ type PluginConfig struct {
 
 // DefaultLogin builds a LoginConfig from the flat default_login_* fields.
 func (p PluginConfig) DefaultLogin() LoginConfig {
-	anon, _ := strconv.ParseBool(p.DefaultLoginAnonymousStr) // "" -> false, no error handling needed
 	return LoginConfig{
-		Anonymous:    anon,
+		Anonymous:    p.DefaultLoginAnonymous,
 		Username:     p.DefaultLoginUsername,
 		Password:     p.DefaultLoginPassword,
 		PasswordFile: p.DefaultLoginPasswordFile,
 	}
 }
 
-// configSpec is the hclspec for the plugin-level config block. Every
-// optional attribute is wrapped in hclspec.NewDefault. default_login_anonymous
-// is typed "string" rather than "bool" -- see the PluginConfig doc comment.
+// configSpec is the hclspec for the plugin-level config block.
 var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"steamcmd_path": hclspec.NewDefault(
 		hclspec.NewAttr("steamcmd_path", "string", false),
@@ -90,8 +61,8 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewLiteral("0"),
 	),
 	"default_login_anonymous": hclspec.NewDefault(
-		hclspec.NewAttr("default_login_anonymous", "string", false),
-		hclspec.NewLiteral(`"true"`),
+		hclspec.NewAttr("default_login_anonymous", "bool", false),
+		hclspec.NewLiteral("true"),
 	),
 	"default_login_username": hclspec.NewDefault(
 		hclspec.NewAttr("default_login_username", "string", false),

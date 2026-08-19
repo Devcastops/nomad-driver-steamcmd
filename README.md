@@ -115,7 +115,7 @@ plugin "nomad-driver-steamcmd" {
     steamcmd_path                = "steamcmd" # must be on the node's PATH
     install_root                 = ""         # reserved, unused in v1
     max_concurrent_installs      = 0          # 0 = unbounded
-    default_login_anonymous      = "true"     # STRING "true"/"false", not a bare bool -- see note below
+    default_login_anonymous      = true       # native bool
     default_login_username       = ""
     default_login_password       = ""
     default_login_password_file  = ""
@@ -123,12 +123,9 @@ plugin "nomad-driver-steamcmd" {
 }
 ```
 
-`default_login_anonymous` takes the *string* `"true"`/`"false"`, not a bare
-HCL boolean -- but that's not actually the important caveat here.
-
-**⚠️ Suspected version-specific Nomad bug: explicit values in this
-agent-config block may not reach the plugin at all on some Nomad
-versions.** Debugging traced a persistent failure (reproduced both in CI
+**⚠️ Confirmed, now-fixed version-specific Nomad bug: explicit values in
+this agent-config block did not reach the plugin at all on Nomad
+v1.9.3.** Debugging traced a persistent failure (reproduced both in CI
 and on a real client) down to `default_login_anonymous` decoding as
 `"false"` -- a genuine string, matching this schema's own default literal
 exactly -- even though `nomad.hcl` clearly set it to `"true"`. This was
@@ -139,42 +136,41 @@ compared line-by-line against `hashicorp/nomad-driver-podman`'s current
 source (a real, actively-maintained external plugin using the exact same
 `config{}` mechanism) and matches it exactly, including a bare
 unwrapped-string attribute (`socket_path`) that's documented as working
-for podman. Since podman's tested Nomad version isn't known, and the
-Nomad module here was previously pinned to v1.9.3, the working theory is
-a version-specific regression rather than anything in this schema. The
-module (and the version `e2e.yml` tests against) is now pinned to
-v1.10.0 to test that theory -- if the diagnostic log line in `SetConfig`
-still shows the field falling back to its default on that version, the
-theory is wrong and this needs a different investigation (possibly a
-dependency-version mismatch in the msgpack library `base.MsgPackDecode`
-uses, since this repo has never had a committed, pinned `go.sum`). See the
-`PluginConfig` doc comment in `driver/config.go` for the full account.
+for podman.
 
-**Note on why this is only v1.10.0, not something newer:** every
-`v1.10.x`/`v1.11.x` patch release beyond `v1.10.0` turned out to be
-Enterprise-only with no public tag (confirmed from GitHub's own release
-listing) -- `v1.10.0` is the last plain-public tag on that line.
-`v2.0.5` (the actual latest public release, on Nomad's newer release
-line) was tried first and is a dead end for now: Go's module system
-requires a v2+ tag's own `go.mod` to either declare `module
-.../nomad/v2` or have no `go.mod` at all (the `+incompatible`
+**Confirmed fixed by v1.10.0.** A canary test was added
+(`.github/workflows/e2e.yml`'s "Assert plugin-level agent config values
+are actually forwarded" step) that sets two fields to values deliberately
+different from their own schema defaults -- the only way to actually
+distinguish "explicit value honored" from "silently fell back to a
+default that happens to match", which is what let this hide for so long
+in the first place. On v1.10.0, both values decoded correctly. This is
+now a permanent regression guard, not just a one-off diagnostic: it runs
+on every CI run and will catch this specific class of bug returning.
+
+**If you're still on v1.9.3 (or any version between the two that hasn't
+been checked):** don't rely on this block for anything where the desired
+value differs from its schema default. `login_username`/`login_password`
+on the task itself (`TaskConfig`'s fields, via job-spec parsing) have
+been directly proven reliable on v1.9.3 too, using real credentials
+against a real steamcmd auth rejection -- set those explicitly per-task
+instead of trusting the plugin-level default on an unconfirmed version.
+
+**Note on why the fix was verified on v1.10.0 specifically, not
+something newer:** every `v1.10.x`/`v1.11.x` patch release beyond
+`v1.10.0` turned out to be Enterprise-only with no public tag (confirmed
+from GitHub's own release listing) -- `v1.10.0` is the last plain-public
+tag on that line. `v2.0.5` (the actual latest public release, on Nomad's
+newer release line) was tried first and is a dead end for now: Go's
+module system requires a v2+ tag's own `go.mod` to either declare
+`module .../nomad/v2` or have no `go.mod` at all (the `+incompatible`
 fallback) -- Nomad's `v2.0.5` tag has a `go.mod` that still declares
 plain `github.com/hashicorp/nomad`, so it satisfies neither mechanism
 and can't be consumed as a normal dependency at all. That's a real
 inconsistency in how that tag was published, not something fixable
-from this side. So `v1.10.0` is a modest bump from `1.9.3`, not the
-"latest available" bump originally intended -- treat it as purely
-diagnostic (does a newer Nomad fix the agent-config bug at all?), not
-a recommendation to run this driver against `v1.10.0` in devcastops.
-Your client is still `1.9.3`, and reconciling the SDK version this is
-built against with your actual agent version is a separate concern
-from the bug investigation itself.
-
-If you hit this on your own cluster: **don't rely on this block** for
-anything where the desired value differs from its schema default --
-`login_username`/`login_password` on the task itself (`TaskConfig`'s
-fields, via job-spec parsing) have been directly proven reliable, using
-real credentials, in a way this agent-config block has not.
+from this side. If you're planning to upgrade past `1.9.3`, `v1.10.0`
+is confirmed to have this fixed; nothing conclusive is known about
+`v2.0.x`.
 
 ## Installing a release
 
@@ -244,7 +240,7 @@ make dev-agent  # single-node `nomad agent -dev` with the plugin loaded
   1. Installs a real Nomad binary and a real `steamcmd` (via apt,
      `i386` arch + EULA auto-accepted via `debconf-set-selections`).
   2. Starts a single-node `nomad agent -dev` with this plugin loaded and
-     `default_login_anonymous = "true"`.
+     `default_login_anonymous = true`.
   3. Confirms the driver **fingerprints healthy**.
   4. Runs a real install-only job against a small, anonymous-downloadable
      app (Half-Life Dedicated Server, App ID `90`) and asserts the task

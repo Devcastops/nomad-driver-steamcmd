@@ -124,7 +124,7 @@ jobs:
               # non-default values purely to prove forwarding works.
               # See "Assert plugin-level agent config values are actually
               # forwarded" below.
-              default_login_anonymous = "true"
+              default_login_anonymous = true
               default_login_username  = "e2e-config-canary"
               max_concurrent_installs = 2
             }

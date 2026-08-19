@@ -105,22 +105,17 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 		d.installSem = nil
 	}
 
-	// Diagnostic: proves at runtime (visible in the client agent's own
-	// log) whether the `plugin "steamcmd" { config { ... } }` stanza is
-	// actually reaching this driver at all, and what it decoded to.
-	// %q + a length are used deliberately instead of the raw value --
-	// hclog renders empty/plain strings and native bools differently
-	// enough (quoted vs bare) that a bare "false" here has previously
-	// been ambiguous between "this is still a bool" and "this is a
-	// string whose actual content is the text false". %q removes that
-	// ambiguity outright. Kept in place while the Nomad-version bump
-	// (see README) is being verified -- this is what will show whether
-	// it's actually fixed.
+	// Diagnostic: kept in place as an ongoing sanity check (and a
+	// regression guard exercised by e2e.yml's "Assert plugin-level agent
+	// config values are actually forwarded" step) that the agent's
+	// `plugin "nomad-driver-steamcmd" { config { ... } }` stanza is
+	// actually reaching this driver, after a real Nomad version-specific
+	// bug in this exact mechanism was found and fixed by upgrading the
+	// tested Nomad version -- see PluginConfig's doc comment.
 	d.logger.Info("steamcmd plugin config loaded",
 		"raw_config_bytes", len(cfg.PluginConfig),
 		"steamcmd_path", pluginConfig.SteamCmdPath,
-		"default_login_anonymous_quoted", fmt.Sprintf("%q", pluginConfig.DefaultLoginAnonymousStr),
-		"default_login_anonymous_len", len(pluginConfig.DefaultLoginAnonymousStr),
+		"default_login_anonymous", pluginConfig.DefaultLoginAnonymous,
 		"default_login_username", pluginConfig.DefaultLoginUsername,
 		"max_concurrent_installs", pluginConfig.MaxConcurrent,
 	)
