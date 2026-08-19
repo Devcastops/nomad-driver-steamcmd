@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/nomad/v2/plugins"
+	"github.com/hashicorp/nomad/plugins"
 
 	steamcmd "github.com/byteford/nomad-driver-steamcmd/driver"
 )

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/nomad/v2/plugins/drivers"
+	"github.com/hashicorp/nomad/plugins/drivers"
 )
 
 // taskPhase tracks where a task is in its install -> launch lifecycle so

@@ -3,7 +3,7 @@ package steamcmd
 import (
 	"strconv"
 
-	"github.com/hashicorp/nomad/v2/plugins/shared/hclspec"
+	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 )
 
 // PluginConfig is the client-level (agent-wide) configuration for the
