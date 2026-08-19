@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/nomad/drivers/shared/eventer"
-	"github.com/hashicorp/nomad/plugins/base"
-	"github.com/hashicorp/nomad/plugins/drivers"
-	"github.com/hashicorp/nomad/plugins/shared/hclspec"
-	pstructs "github.com/hashicorp/nomad/plugins/shared/structs"
+	"github.com/hashicorp/nomad/v2/drivers/shared/eventer"
+	"github.com/hashicorp/nomad/v2/plugins/base"
+	"github.com/hashicorp/nomad/v2/plugins/drivers"
+	"github.com/hashicorp/nomad/v2/plugins/shared/hclspec"
+	pstructs "github.com/hashicorp/nomad/v2/plugins/shared/structs"
 )
 
 const (

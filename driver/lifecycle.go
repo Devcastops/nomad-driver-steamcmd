@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hashicorp/nomad/plugins/drivers"
+	"github.com/hashicorp/nomad/v2/plugins/drivers"
 )
 
 // minFreeBytes is a conservative floor below which we refuse to start an
