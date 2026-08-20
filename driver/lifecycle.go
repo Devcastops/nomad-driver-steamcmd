@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -227,20 +228,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return handle, nil, nil
 	}
 
-	// Go's exec package resolves the executable path relative to THIS
-	// process's own working directory (or via PATH lookup), not relative
-	// to launchCmd.Dir -- Dir only sets the working directory of the
-	// spawned child *after* it's already been located and started. A
-	// relative launch.command (e.g. our own example's
-	// "local/steamapp/PalServer.sh") would therefore almost never
-	// actually be found, regardless of Dir being set to installDir.
-	// Confirmed in production: install succeeded, launch then failed to
-	// find the app file. Resolve relative commands against installDir
-	// explicitly before handing them to exec; leave absolute paths as-is.
-	launchPath := taskCfg.Launch.Command
-	if !filepath.IsAbs(launchPath) {
-		launchPath = filepath.Join(installDir, launchPath)
-	}
+	// See resolveLaunchPath's doc comment for why this isn't a plain
+	// filepath.Join: a relative path like "local/steamapp/PalServer.sh"
+	// needs resolving against installDir, but a bare command name like
+	// "xvfb-run" must be left alone for $PATH lookup -- both have broken
+	// in production at different points, so this now has its own tested
+	// function rather than being inline logic easy to regress again.
+	launchPath := resolveLaunchPath(taskCfg.Launch.Command, installDir)
 
 	launchCmd := exec.CommandContext(h.ctx, launchPath, taskCfg.Launch.Args...)
 	launchCmd.Dir = installDir
@@ -472,6 +466,33 @@ func taskLogFiles(cfg *drivers.TaskConfig) (stdout, stderr *os.File, closeFn fun
 		return nil, nil, nil, err
 	}
 	return so, se, func() { so.Close(); se.Close() }, nil
+}
+
+// resolveLaunchPath decides how a task's launch.command should be located.
+//
+// Go's exec package resolves the executable path relative to the CALLING
+// process's own working directory (or via a $PATH lookup for a bare
+// name) -- never relative to the spawned command's Dir field, which only
+// sets the child's working directory *after* it's already been located
+// and started. This means two different cases need two different
+// treatments, and both have broken in production at different points
+// before this was pulled out into its own tested function:
+//
+//   - A relative path WITH a directory component, e.g.
+//     "local/steamapp/PalServer.sh", needs to be resolved against
+//     installDir explicitly -- otherwise Go looks for it relative to the
+//     driver process's own cwd and never finds it.
+//   - A BARE command with no path component at all, e.g. "xvfb-run" or
+//     "wine", must be left untouched so exec's own $PATH lookup applies --
+//     exactly like steamcmd_path itself. Joining it with installDir
+//     unconditionally turns it into a literal (nonexistent) file path
+//     inside installDir instead.
+//   - An already-absolute path is left untouched either way.
+func resolveLaunchPath(command, installDir string) string {
+	if strings.Contains(command, "/") && !filepath.IsAbs(command) {
+		return filepath.Join(installDir, command)
+	}
+	return command
 }
 
 func parseSignal(s string) (syscall.Signal, error) {

@@ -89,6 +89,17 @@ config {
 }
 ```
 
+`launch.command` resolution has bitten this driver twice in production, so
+it's worth being explicit about exactly how it works: a command
+containing a `/` and not already absolute (`local/steamapp/PalServer.sh`)
+is resolved against `install_dir`. A **bare** command with no `/` at all
+(`xvfb-run`, `wine`) is left untouched for a `$PATH` lookup instead --
+this matters because a binary directly inside `install_dir` with no
+subdirectory (`command = "PalServer.sh"`, no `local/steamapp/` prefix)
+looks identical to a bare PATH-lookup command under this rule and will
+almost certainly fail to launch. Use `./PalServer.sh` or the full relative
+path from the task root instead of a bare filename in that case.
+
 `platform` sets steamcmd's `@sSteamCmdForcePlatformType` convar, overriding
 which platform's depot gets downloaded regardless of the client node's
 actual OS. Needed for dedicated servers that only publish a build for one
