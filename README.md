@@ -72,6 +72,7 @@ config {
   beta            = ""               # optional beta branch
   beta_password   = ""               # optional, only if beta requires one
   validate        = false            # steamcmd `validate` flag
+  platform        = ""               # "windows", "macos", or "linux" -- see below
   update_on_start = true             # re-run steamcmd before every launch
   install_timeout = "20m"            # optional, Go duration string
 
@@ -86,6 +87,80 @@ config {
     env     = { KEY = "value" }
   }
 }
+```
+
+`platform` sets steamcmd's `@sSteamCmdForcePlatformType` convar, overriding
+which platform's depot gets downloaded regardless of the client node's
+actual OS. Needed for dedicated servers that only publish a build for one
+platform -- some apps (e.g. `2915550`, FOUNDRY) have no Linux build at
+all, and installing without this produces install_dir containing only
+Steam's own runtime scaffolding (`steamclient.so`, `linux64/`,
+`steamapps/`) with no actual app content and no error. To run a
+Windows-only server on a Linux client, set `platform = "windows"` and run
+the resulting `.exe` under Wine:
+
+```hcl
+config {
+  app_id   = "2915550"
+  platform = "windows"
+
+  launch {
+    command = "xvfb-run"
+    args    = ["wine", "local/steamapp/FoundryDedicatedServer.exe"]
+  }
+}
+```
+
+Requires `wine` and `xvfb-run` installed on the client node (Wine because
+the server is a Windows binary; Xvfb because this particular server
+apparently wants a display even in "dedicated" mode -- confirmed working
+by the community for this app, not something this driver does anything
+special for beyond getting the right binary downloaded in the first place).
+
+### Setting up Wine + Xvfb on the client node
+
+Needed on any client that'll run a `platform = "windows"` task through
+Wine (Ubuntu/Debian shown; adjust for other distros). This is normal
+system setup on the client, not something this driver installs or manages.
+
+```sh
+# 32-bit support -- almost certainly already enabled if you followed
+# steamcmd's own setup on this node, but harmless to repeat.
+sudo dpkg --add-architecture i386
+
+# WineHQ's own repo, rather than Ubuntu's bundled `wine` package, which
+# tends to lag behind. Key + repo setup:
+sudo mkdir -pm755 /etc/apt/keyrings
+sudo wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+sudo wget -NP /etc/apt/sources.list.d/ \
+  https://dl.winehq.org/wine-builds/ubuntu/dists/$(lsb_release -sc)/winehq-$(lsb_release -sc).sources
+
+sudo apt update
+sudo apt install --install-recommends winehq-stable xvfb -y
+```
+
+**One-time Wine prefix setup, as whatever user Nomad actually runs
+tasks as** (root, in a typical homelab client config -- check yours).
+Skipping this means the *first* time a Nomad task tries to launch under
+Wine, Wine may try to pop up a Mono/Gecko installer dialog to initialize
+its prefix -- which will simply hang forever under Nomad, since there's
+no display/interaction to click through:
+
+```sh
+sudo WINEDLLOVERRIDES="mscoree,mshtml=" wineboot --init
+```
+
+`WINEDLLOVERRIDES="mscoree,mshtml="` disables the Mono (.NET) and Gecko
+(HTML rendering) components most dedicated servers don't need, avoiding
+their install prompts entirely rather than needing to click through them
+once interactively first. If a specific app's server *does* need one of
+these (check its own setup docs), drop the override for that component
+and initialize the prefix interactively once first instead.
+
+Verify before wiring it into a job spec:
+
+```sh
+sudo xvfb-run wine --version
 ```
 
 Login fields are flat top-level attributes, not a nested `login {}` block.

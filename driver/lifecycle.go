@@ -227,7 +227,22 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return handle, nil, nil
 	}
 
-	launchCmd := exec.CommandContext(h.ctx, taskCfg.Launch.Command, taskCfg.Launch.Args...)
+	// Go's exec package resolves the executable path relative to THIS
+	// process's own working directory (or via PATH lookup), not relative
+	// to launchCmd.Dir -- Dir only sets the working directory of the
+	// spawned child *after* it's already been located and started. A
+	// relative launch.command (e.g. our own example's
+	// "local/steamapp/PalServer.sh") would therefore almost never
+	// actually be found, regardless of Dir being set to installDir.
+	// Confirmed in production: install succeeded, launch then failed to
+	// find the app file. Resolve relative commands against installDir
+	// explicitly before handing them to exec; leave absolute paths as-is.
+	launchPath := taskCfg.Launch.Command
+	if !filepath.IsAbs(launchPath) {
+		launchPath = filepath.Join(installDir, launchPath)
+	}
+
+	launchCmd := exec.CommandContext(h.ctx, launchPath, taskCfg.Launch.Args...)
 	launchCmd.Dir = installDir
 	launchCmd.Stdout = stdout
 	launchCmd.Stderr = stderr
@@ -244,7 +259,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 
 	if err := launchCmd.Start(); err != nil {
 		d.tasks.Delete(cfg.ID)
-		return nil, nil, fmt.Errorf("failed to launch %q: %w", taskCfg.Launch.Command, err)
+		return nil, nil, fmt.Errorf("failed to launch %q: %w", launchPath, err)
 	}
 
 	h.mu.Lock()
@@ -272,7 +287,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 
 	d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
-		Message: fmt.Sprintf("launched %s (pid %d)", taskCfg.Launch.Command, launchCmd.Process.Pid)})
+		Message: fmt.Sprintf("launched %s (pid %d)", launchPath, launchCmd.Process.Pid)})
 
 	// The launched process is long-running by design (a game server);
 	// StartTask must not block on it. Supervise it in the background --

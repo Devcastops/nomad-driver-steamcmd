@@ -33,6 +33,30 @@ func TestBuildArgs_ValidateAndBeta(t *testing.T) {
 	require.Contains(t, args, "validate")
 }
 
+func TestBuildArgs_PlatformOverride(t *testing.T) {
+	cfg := TaskConfig{AppID: "2915550", Platform: "windows"}
+	login := LoginConfig{Anonymous: true}
+
+	args, err := buildArgs(cfg, login, "/tmp/install")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"+@sSteamCmdForcePlatformType", "windows",
+		"+force_install_dir", "/tmp/install",
+		"+login", "anonymous",
+		"+app_update", "2915550",
+		"+quit",
+	}, args)
+}
+
+func TestBuildArgs_InvalidPlatformErrors(t *testing.T) {
+	cfg := TaskConfig{AppID: "2915550", Platform: "amiga"}
+	login := LoginConfig{Anonymous: true}
+
+	_, err := buildArgs(cfg, login, "/tmp/install")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid platform")
+}
+
 func TestBuildArgs_NoLoginErrors(t *testing.T) {
 	cfg := TaskConfig{AppID: "2394010"}
 	login := LoginConfig{}

@@ -89,6 +89,7 @@ type TaskConfig struct {
 	Beta              string        `codec:"beta"`
 	BetaPassword      string        `codec:"beta_password"`
 	Validate          bool          `codec:"validate"`
+	Platform          string        `codec:"platform"`
 	LoginAnonymous    bool          `codec:"login_anonymous"`
 	LoginUsername     string        `codec:"login_username"`
 	LoginPassword     string        `codec:"login_password"`
@@ -159,6 +160,10 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"validate": hclspec.NewDefault(
 		hclspec.NewAttr("validate", "bool", false),
 		hclspec.NewLiteral("false"),
+	),
+	"platform": hclspec.NewDefault(
+		hclspec.NewAttr("platform", "string", false),
+		hclspec.NewLiteral(`""`),
 	),
 	"update_on_start": hclspec.NewDefault(
 		hclspec.NewAttr("update_on_start", "bool", false),

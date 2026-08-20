@@ -40,10 +40,37 @@ type installResult struct {
 	Message    string
 }
 
+// validSteamPlatforms are the platform values steamcmd's
+// @sSteamCmdForcePlatformType convar actually accepts. Anything else is
+// rejected at StartTask time rather than passed through to steamcmd
+// silently -- a typo here would otherwise just install nothing detectable
+// as a driver-level error.
+var validSteamPlatforms = map[string]bool{
+	"windows": true,
+	"macos":   true,
+	"linux":   true,
+}
+
 // buildArgs constructs the steamcmd argument list for an install/update.
 // login must already be resolved (task override or plugin default).
 func buildArgs(cfg TaskConfig, login LoginConfig, installDir string) ([]string, error) {
 	var args []string
+
+	// Must come first, before force_install_dir/login: some Steam apps
+	// (dedicated servers especially) only publish a build for one
+	// platform. @sSteamCmdForcePlatformType overrides which platform's
+	// depot steamcmd fetches, regardless of the host OS it's actually
+	// running on -- e.g. downloading the Windows build of a
+	// Windows-only dedicated server onto a Linux client, to then run
+	// under Wine. Without this, steamcmd silently installs nothing
+	// useful for that platform: no error, just an install_dir containing
+	// only Steam's own runtime scaffolding and no actual app content.
+	if cfg.Platform != "" {
+		if !validSteamPlatforms[cfg.Platform] {
+			return nil, fmt.Errorf("steamcmd: invalid platform %q (must be one of: windows, macos, linux)", cfg.Platform)
+		}
+		args = append(args, "+@sSteamCmdForcePlatformType", cfg.Platform)
+	}
 
 	args = append(args, "+force_install_dir", installDir)
 
