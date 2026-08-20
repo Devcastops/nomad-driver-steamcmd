@@ -158,24 +158,44 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 	}
 	result.ExitCode = cmd.ProcessState.ExitCode()
 
+	// Success is checked first and is authoritative. A real auth failure
+	// (bad credentials, no cached session) can never produce a genuine
+	// "Success! App 'X' ..." line afterward -- so if we saw one, trust it,
+	// even if an earlier line in the same run happened to match
+	// reAuthErr. This matters because reAuthErr's patterns (especially
+	// the bare "FAILED") are intentionally broad to catch real failures
+	// reliably, which means they can also fire on benign transient lines
+	// steamcmd prints during a normal login (retries, 2FA prompts on a
+	// session that ultimately authenticates via a cached token, etc).
+	// Confirmed in production: a real install completed successfully
+	// end-to-end and was still reported as a Driver Failure with the
+	// success line itself as the error message, because AuthFailed had
+	// latched true on an earlier line and was never reconsidered once
+	// Success came in after it.
+	if result.Success {
+		if result.AuthFailed {
+			fmt.Fprintf(stderr, "steamcmd: an auth-related line was seen during this run, but a genuine success marker followed it; treating as success\n")
+		}
+		if runErr != nil {
+			// Success marker present but process still returned an error --
+			// trust the marker, but surface the anomaly in the log.
+			fmt.Fprintf(stderr, "steamcmd: process returned error %v despite success marker; treating as success\n", runErr)
+		}
+		return result, nil
+	}
+
 	if result.AuthFailed {
 		return result, fmt.Errorf("steamcmd: authentication failed: %s", result.Message)
 	}
-	if !result.Success {
-		// Exit code 0 with no explicit success marker is treated as a
-		// failure -- this is the "steamcmd lied about success" case.
-		if result.Message == "" {
-			result.Message = fmt.Sprintf("steamcmd exited %d with no success marker in output", result.ExitCode)
-		}
-		return result, fmt.Errorf("steamcmd: install/update did not complete: %s", result.Message)
-	}
-	if runErr != nil {
-		// Success marker present but process still returned an error --
-		// trust the marker, but surface the anomaly in the log.
-		fmt.Fprintf(stderr, "steamcmd: process returned error %v despite success marker; treating as success\n", runErr)
-	}
 
-	return result, nil
+	// No success marker and no auth-failure marker: steamcmd exited
+	// without a clear terminal signal either way -- treat as a failure
+	// rather than trusting a bare exit code of 0 (the "steamcmd lied
+	// about success" case).
+	if result.Message == "" {
+		result.Message = fmt.Sprintf("steamcmd exited %d with no success marker in output", result.ExitCode)
+	}
+	return result, fmt.Errorf("steamcmd: install/update did not complete: %s", result.Message)
 }
 
 // statfsFree returns free bytes on the filesystem containing path, used
