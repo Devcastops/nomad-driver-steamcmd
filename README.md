@@ -73,8 +73,13 @@ config {
   beta_password   = ""               # optional, only if beta requires one
   validate        = false            # steamcmd `validate` flag
   platform        = ""               # "windows", "macos", or "linux" -- see below
+  windows_display = false            # wrap with xvfb-run --auto-servernum; only with platform="windows"
   update_on_start = true             # re-run steamcmd before every launch
   install_timeout = "20m"            # optional, Go duration string
+
+  # Sets WINEPREFIX for the launched process; overrides the plugin-level
+  # default_wine_prefix if both are set; only meaningful with platform="windows"
+  wine_prefix = ""
 
   login_anonymous     = true   # or:
   login_username      = ""
@@ -98,7 +103,8 @@ this matters because a binary directly inside `install_dir` with no
 subdirectory (`command = "PalServer.sh"`, no `local/steamapp/` prefix)
 looks identical to a bare PATH-lookup command under this rule and will
 almost certainly fail to launch. Use `./PalServer.sh` or the full relative
-path from the task root instead of a bare filename in that case.
+path from the task root instead of a bare filename in that case. Note
+this resolution only applies when `platform` isn't `"windows"` -- see below.
 
 **`launch.args` are passed through completely unmodified** -- none of the
 above applies to them, and this has *also* now bitten in production
@@ -121,23 +127,51 @@ actual OS. Needed for dedicated servers that only publish a build for one
 platform -- some apps (e.g. `2915550`, FOUNDRY) have no Linux build at
 all, and installing without this produces install_dir containing only
 Steam's own runtime scaffolding (`steamclient.so`, `linux64/`,
-`steamapps/`) with no actual app content and no error. To run a
-Windows-only server on a Linux client, set `platform = "windows"` and run
-the resulting `.exe` under Wine:
+`steamapps/`) with no actual app content and no error.
+
+**When `platform = "windows"`, `launch.command`/`args` are automatically
+wrapped with `wine`** (and, if `windows_display = true`, additionally
+with `xvfb-run --auto-servernum`) -- write the `.exe` and its own
+arguments directly, the same as you would for a native Linux binary:
 
 ```hcl
 config {
-  app_id   = "2915550"
-  platform = "windows"
+  app_id          = "2915550"
+  platform        = "windows"
+  windows_display = true                # only if the app actually needs a display -- see below
+  wine_prefix     = "/root/.wine-test"   # optional; sets WINEPREFIX for you
 
   launch {
-    command = "xvfb-run"
-    args    = ["wine", "local/steamapp/FoundryDedicatedServer.exe"]
+    command = "FoundryDedicatedServer.exe"  # NOT "local/steamapp/..." -- same
+                                             # resolution rule as launch.args above,
+                                             # since this is really an argument to
+                                             # wine/xvfb-run once wrapped, not the
+                                             # actual exec target
+    args    = ["-batchmode", "-nographics"]
   }
 }
 ```
 
-Requires `wine` and `xvfb-run` installed on the client node (Wine because
+This expands internally to `wine FoundryDedicatedServer.exe -batchmode
+-nographics` (working directory `install_dir`), or with
+`windows_display = true`, `xvfb-run --auto-servernum wine
+FoundryDedicatedServer.exe -batchmode -nographics`. See
+`buildLaunchCommand` in `driver/lifecycle.go` for the exact logic.
+
+**`windows_display` defaults to `false` and is never auto-enabled just
+because `platform = "windows"`** -- confirmed in production this exact
+combination is what one specific app (FOUNDRY) needs, but plenty of
+Windows console apps genuinely don't need any display at all (this
+driver's own Unity-specific troubleshooting confirmed `-batchmode
+-nographics` alone is *not* always sufficient either -- it reduces what
+the app does graphics-wise, but doesn't remove Wine's own need for a
+display to exist at all, for apps that check). Forcing Xvfb
+unconditionally onto every Windows-platform task would reintroduce
+failure surface (stale display locks, an extra runtime dependency) this
+driver deliberately keeps opt-in. Check your specific app's own behavior
+before deciding whether you need it.
+
+Requires `wine` (and, if using `windows_display`, `xvfb-run`) installed on the client node (Wine because
 the server is a Windows binary; Xvfb because this particular server
 apparently wants a display even in "dedicated" mode -- confirmed working
 by the community for this app, not something this driver does anything
@@ -189,6 +223,71 @@ Verify before wiring it into a job spec:
 sudo xvfb-run wine --version
 ```
 
+**Always use `--auto-servernum`, not the plain default, for any app that
+genuinely needs a virtual display.** `xvfb-run` defaults to a *fixed*
+display number (`:99`) -- fine for a one-off manual test, but genuinely
+unsafe for anything that restarts: a redeploy, a crash-and-retry, or just
+a Nomad reschedule can start a new allocation's `Xvfb` while an old
+allocation's `Xvfb` is still tearing down (within `kill_timeout`), both
+wanting the same fixed display. This driver signals the whole process
+group on stop (not just the top-level wrapper -- see
+`signalProcessGroup` in `driver/lifecycle.go`), which fixes *eventual*
+cleanup, but that's a different problem from the race window itself; only
+`--auto-servernum` actually closes it. The driver always passes
+`--auto-servernum` automatically when `windows_display = true` (see the
+Task config reference above) -- this only matters if you're testing Wine
+manually outside of Nomad, or writing the raw wrapper yourself for some
+other reason:
+
+```hcl
+# What windows_display=true expands to internally -- write this yourself
+# only if you're not using platform="windows" (e.g. wrapping some other
+# non-Steam binary through this driver's raw exec path).
+launch {
+  command = "xvfb-run"
+  args    = ["--auto-servernum", "wine", "FoundryDedicatedServer.exe"]
+}
+```
+
+**For a Unity-based Windows app specifically, also pass `-batchmode
+-nographics`** in `launch.args` (alongside `windows_display = true`, not
+instead of it). These are Unity's own headless-run flags, not something
+this driver knows about -- worth checking whether your app's engine has
+an equivalent, since it can reduce what the app itself tries to do
+graphics-wise even with a display present. Note this is *additive* to
+`windows_display`, not a replacement for it: confirmed directly against
+FOUNDRY (app `2915550`) that `-batchmode -nographics` alone, with
+`windows_display = false`, still fails at `Failed to create batch mode
+window` -- Wine's window-driver check still needs *some* display to
+satisfy it, that flag just changes what the app itself does once one
+exists.
+
+**⚠️ Confirmed broken: `wine-stable 11.0.0.0~noble-1` (WineHQ's own
+package, as of writing) reliably fails with `wine: could not load
+kernel32.dll, status c0000135` on Ubuntu 24.04, even against a completely
+fresh prefix with correct architecture and a file-integrity-verified
+install.** This was isolated thoroughly before concluding it's the
+package itself: ruled out prefix corruption (fresh `wineboot --init`
+every time), architecture mismatch (confirmed `win64`), a
+mixed-Wine-source conflict (purged Ubuntu's own `wine64`/`libwine`
+packages, confirmed only WineHQ's remained), environment/wrapper-chain
+issues (identical failure with `sudo`/`xvfb-run` completely stripped
+away, `WINEPREFIX` set explicitly), and file corruption (`kernel32.dll`
+verified as a valid, correctly-sized `PE32+` DLL via `file`).
+**`wine-staging 11.15` does not have this problem** -- switching to it
+was what actually got FOUNDRY running. If `wine winecfg` (or any Wine
+invocation) fails with this exact error against `wine-stable`, don't
+keep debugging your own setup -- try `staging` instead:
+
+```sh
+sudo apt-get install --allow-downgrades winehq-staging
+which wine && wine --version   # confirm it's actually staging now
+```
+
+This is worth reporting to WineHQ directly if you hit it -- it's a
+genuine packaging/build issue, not a configuration problem, and this
+investigation already did the work to isolate it cleanly.
+
 Login fields are flat top-level attributes, not a nested `login {}` block.
 That's not a style choice -- a nested block here was found to decode
 incorrectly specifically in the Nomad client agent's plugin-config parsing
@@ -220,6 +319,9 @@ plugin "nomad-driver-steamcmd" {
     default_login_username       = ""
     default_login_password       = ""
     default_login_password_file  = ""
+    default_wine_prefix          = ""         # fleet-wide WINEPREFIX default;
+                                               # task-level wine_prefix overrides
+                                               # this if both are set
   }
 }
 ```

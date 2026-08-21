@@ -32,6 +32,7 @@ type PluginConfig struct {
 	DefaultLoginUsername     string `codec:"default_login_username"`
 	DefaultLoginPassword     string `codec:"default_login_password"`
 	DefaultLoginPasswordFile string `codec:"default_login_password_file"`
+	DefaultWinePrefix        string `codec:"default_wine_prefix"`
 	InstallRoot              string `codec:"install_root"`
 	MaxConcurrent            int    `codec:"max_concurrent_installs"`
 }
@@ -76,6 +77,10 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewAttr("default_login_password_file", "string", false),
 		hclspec.NewLiteral(`""`),
 	),
+	"default_wine_prefix": hclspec.NewDefault(
+		hclspec.NewAttr("default_wine_prefix", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
 })
 
 // TaskConfig is the per-task configuration set in a job spec's
@@ -90,6 +95,8 @@ type TaskConfig struct {
 	BetaPassword      string        `codec:"beta_password"`
 	Validate          bool          `codec:"validate"`
 	Platform          string        `codec:"platform"`
+	WinePrefix        string        `codec:"wine_prefix"`
+	WindowsDisplay    bool          `codec:"windows_display"`
 	LoginAnonymous    bool          `codec:"login_anonymous"`
 	LoginUsername     string        `codec:"login_username"`
 	LoginPassword     string        `codec:"login_password"`
@@ -164,6 +171,14 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"platform": hclspec.NewDefault(
 		hclspec.NewAttr("platform", "string", false),
 		hclspec.NewLiteral(`""`),
+	),
+	"wine_prefix": hclspec.NewDefault(
+		hclspec.NewAttr("wine_prefix", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"windows_display": hclspec.NewDefault(
+		hclspec.NewAttr("windows_display", "bool", false),
+		hclspec.NewLiteral("false"),
 	),
 	"update_on_start": hclspec.NewDefault(
 		hclspec.NewAttr("update_on_start", "bool", false),

@@ -8,6 +8,93 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 )
 
+func TestResolveWinePrefix(t *testing.T) {
+	cases := []struct {
+		name   string
+		task   string
+		plugin string
+		want   string
+	}{
+		{"task overrides plugin when both set", "/root/.wine-task", "/root/.wine-plugin", "/root/.wine-task"},
+		{"falls back to plugin when task unset", "", "/root/.wine-plugin", "/root/.wine-plugin"},
+		{"empty when neither set", "", "", ""},
+		{"task alone with no plugin default", "/root/.wine-task", "", "/root/.wine-task"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveWinePrefix(tc.task, tc.plugin)
+			if got != tc.want {
+				t.Errorf("resolveWinePrefix(%q, %q) = %q, want %q", tc.task, tc.plugin, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildLaunchCommand(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         TaskConfig
+		wantCommand string
+		wantArgs    []string
+	}{
+		{
+			name: "non-windows platform is left untouched",
+			cfg: TaskConfig{
+				Platform: "",
+				Launch:   &LaunchConfig{Command: "PalServer.sh", Args: []string{"-port=8211"}},
+			},
+			wantCommand: "PalServer.sh",
+			wantArgs:    []string{"-port=8211"},
+		},
+		{
+			name: "windows platform wraps with wine, no display",
+			cfg: TaskConfig{
+				Platform: "windows",
+				Launch:   &LaunchConfig{Command: "FoundryDedicatedServer.exe", Args: []string{"-batchmode", "-nographics"}},
+			},
+			wantCommand: "wine",
+			wantArgs:    []string{"FoundryDedicatedServer.exe", "-batchmode", "-nographics"},
+		},
+		{
+			name: "windows platform with windows_display wraps with xvfb-run --auto-servernum wine",
+			cfg: TaskConfig{
+				Platform:       "windows",
+				WindowsDisplay: true,
+				Launch:         &LaunchConfig{Command: "FoundryDedicatedServer.exe", Args: []string{"-batchmode", "-nographics"}},
+			},
+			wantCommand: "xvfb-run",
+			wantArgs:    []string{"--auto-servernum", "wine", "FoundryDedicatedServer.exe", "-batchmode", "-nographics"},
+		},
+		{
+			name: "windows platform, no launch args at all",
+			cfg: TaskConfig{
+				Platform: "windows",
+				Launch:   &LaunchConfig{Command: "server.exe"},
+			},
+			wantCommand: "wine",
+			wantArgs:    []string{"server.exe"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotCommand, gotArgs := buildLaunchCommand(tc.cfg)
+			if gotCommand != tc.wantCommand {
+				t.Errorf("command = %q, want %q", gotCommand, tc.wantCommand)
+			}
+			if len(gotArgs) != len(tc.wantArgs) {
+				t.Fatalf("args = %v, want %v", gotArgs, tc.wantArgs)
+			}
+			for i := range gotArgs {
+				if gotArgs[i] != tc.wantArgs[i] {
+					t.Errorf("args[%d] = %q, want %q (full: got=%v want=%v)", i, gotArgs[i], tc.wantArgs[i], gotArgs, tc.wantArgs)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveLaunchPath(t *testing.T) {
 	cases := []struct {
 		name       string
