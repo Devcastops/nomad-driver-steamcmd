@@ -20,7 +20,14 @@ job "foundry" {
 
         launch {
           command = "xvfb-run"
-          args    = ["wine", "local/steamapp/FoundryDedicatedServer.exe"]
+          # NOT "local/steamapp/FoundryDedicatedServer.exe" -- the launched
+          # process's working directory is already install_dir (which IS
+          # local/steamapp), so a bare filename here resolves correctly.
+          # Confirmed the hard way: the doubled-path version fails with
+          # `wine: failed to open "local/steamapp/FoundryDedicatedServer.exe"`
+          # because Wine resolves it relative to a cwd that's already
+          # local/steamapp, producing local/steamapp/local/steamapp/....
+          args = ["wine", "FoundryDedicatedServer.exe"]
         }
       }
 

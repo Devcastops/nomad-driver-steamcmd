@@ -100,6 +100,21 @@ looks identical to a bare PATH-lookup command under this rule and will
 almost certainly fail to launch. Use `./PalServer.sh` or the full relative
 path from the task root instead of a bare filename in that case.
 
+**`launch.args` are passed through completely unmodified** -- none of the
+above applies to them, and this has *also* now bitten in production
+(`xvfb-run wine local/steamapp/FoundryDedicatedServer.exe`, failing with
+`wine: failed to open "local/steamapp/FoundryDedicatedServer.exe"`). The
+launched process's working directory is always set to `install_dir`
+(regardless of whether `command` needed resolving against it), so any
+path-like value inside `args` is resolved by *the launched program
+itself*, relative to `install_dir` -- not the task root. Write path
+arguments as `"FoundryDedicatedServer.exe"`, not
+`"local/steamapp/FoundryDedicatedServer.exe"`, when `install_dir` is
+`local/steamapp`. This is deliberately not auto-corrected by the driver:
+there's no reliable way to tell a path-like argument apart from an
+arbitrary flag or value (`-port=8211` isn't a path; some other app's
+`config/server.cfg` argument might be) without guessing wrong sometimes.
+
 `platform` sets steamcmd's `@sSteamCmdForcePlatformType` convar, overriding
 which platform's depot gets downloaded regardless of the client node's
 actual OS. Needed for dedicated servers that only publish a build for one

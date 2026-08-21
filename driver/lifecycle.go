@@ -372,7 +372,7 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 		}
 	}
 
-	if err := cmd.Process.Signal(sig); err != nil && err != os.ErrProcessDone {
+	if err := signalProcessGroup(cmd.Process.Pid, sig); err != nil && err != os.ErrProcessDone {
 		d.logger.Warn("failed to send stop signal, will escalate to SIGKILL", "task_id", taskID, "error", err)
 	}
 
@@ -381,7 +381,7 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 		return nil
 	case <-time.After(timeout):
 		d.logger.Warn("task did not exit within kill_timeout, sending SIGKILL", "task_id", taskID, "timeout", timeout)
-		_ = cmd.Process.Kill()
+		_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		return nil
 	}
 }
@@ -401,7 +401,7 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 		cmd := h.cmd
 		h.mu.RUnlock()
 		if cmd != nil && cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		}
 	}
 	h.cancel()
@@ -448,7 +448,7 @@ func (d *Driver) SignalTask(taskID string, signal string) error {
 	if err != nil {
 		return err
 	}
-	return cmd.Process.Signal(sig)
+	return signalProcessGroup(cmd.Process.Pid, sig)
 }
 
 func (d *Driver) ExecTask(taskID string, cmdArgs []string, timeout time.Duration) (*drivers.ExecTaskResult, error) {
@@ -493,6 +493,31 @@ func resolveLaunchPath(command, installDir string) string {
 		return filepath.Join(installDir, command)
 	}
 	return command
+}
+
+// signalProcessGroup signals the whole process group the launched command
+// was started in, not just the top-level process itself.
+//
+// StartTask sets SysProcAttr{Setpgid: true} specifically so the launched
+// process becomes its own process group leader (PGID == PID) -- but that
+// alone does nothing unless signals are actually sent to the group.
+// cmd.Process.Signal()/Kill() only ever signal the single top-level PID.
+// This matters a lot for exactly the kind of launch command this driver
+// is designed to support: a wrapper script (xvfb-run, or any shell
+// wrapper) that itself spawns real child processes (Xvfb, wine, the
+// actual game server) without replacing itself via exec. Signaling only
+// the wrapper leaves those children running as orphans on every stop --
+// confirmed in production: a stopped/redeployed task left a live orphaned
+// Xvfb process bound to the display, blocking every subsequent launch
+// attempt until manually killed. The negative-PID convention (signal -PID
+// instead of PID) is the standard POSIX way to target an entire process
+// group in one call.
+func signalProcessGroup(pid int, sig syscall.Signal) error {
+	err := syscall.Kill(-pid, sig)
+	if err == syscall.ESRCH {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 func parseSignal(s string) (syscall.Signal, error) {

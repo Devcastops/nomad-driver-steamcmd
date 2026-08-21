@@ -29,7 +29,20 @@ jobs:
           cache: true
 
       - name: Resolve modules
-        run: go mod tidy
+        # `go mod tidy` occasionally hits a transient network error talking
+        # to sum.golang.org (Go's checksum database) -- an HTTP/2 stream
+        # error unrelated to anything in this repo. A short retry clears
+        # it without needing a manual workflow re-run every time it happens.
+        run: |
+          for i in 1 2 3; do
+            if go mod tidy; then
+              exit 0
+            fi
+            echo "go mod tidy failed (attempt $i/3), retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::go mod tidy failed after 3 attempts"
+          exit 1
 
       - name: Build driver plugin
         run: |
