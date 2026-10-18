@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func TestMergeConfigFiles(t *testing.T) {
+	got := mergeConfigFiles([]map[string]string{{"a": "1", "b": "2"}, {"b": "3"}, nil})
+	if len(got) != 2 || got["a"] != "1" || got["b"] != "3" {
+		t.Errorf("got %v", got)
+	}
+	if got := mergeConfigFiles(nil); len(got) != 0 {
+		t.Errorf("nil input: %v", got)
+	}
+}
+
 func TestStageConfigFiles(t *testing.T) {
 	taskDir := t.TempDir()
 	installDir := filepath.Join(taskDir, "install")

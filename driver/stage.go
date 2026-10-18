@@ -43,6 +43,18 @@ func stageConfigFiles(taskDir, installDir string, files map[string]string) error
 	return nil
 }
 
+// mergeConfigFiles flattens the config_files list-of-maps (see the schema
+// note in config.go) into one source -> destination map. Later entries win.
+func mergeConfigFiles(in []map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, m := range in {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // stageDestination resolves a config_files destination inside installDir.
 func stageDestination(installDir, dst string) (string, error) {
 	if dst == "" || filepath.IsAbs(dst) {

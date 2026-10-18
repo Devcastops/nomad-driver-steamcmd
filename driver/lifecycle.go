@@ -245,7 +245,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	// in production at different points, so this now has its own tested
 	// function rather than being inline logic easy to regress again.
 	if len(taskCfg.ConfigFiles) > 0 {
-		if err := stageConfigFiles(cfg.TaskDir().Dir, installDir, taskCfg.ConfigFiles); err != nil {
+		if err := stageConfigFiles(cfg.TaskDir().Dir, installDir, mergeConfigFiles(taskCfg.ConfigFiles)); err != nil {
 			d.tasks.Delete(cfg.ID)
 			return nil, nil, err
 		}
