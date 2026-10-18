@@ -35,6 +35,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 	cases := []struct {
 		name        string
 		cfg         TaskConfig
+		rt          windowsRuntime
 		wantCommand string
 		wantArgs    []string
 	}{
@@ -75,11 +76,32 @@ func TestBuildLaunchCommand(t *testing.T) {
 			wantCommand: "wine",
 			wantArgs:    []string{"server.exe"},
 		},
+		{
+			name: "proton runner wraps with <proton>/proton run",
+			cfg: TaskConfig{
+				Platform: "windows",
+				Launch:   &LaunchConfig{Command: "server.exe", Args: []string{"-batchmode"}},
+			},
+			rt:          windowsRuntime{Runner: "proton", ProtonPath: "/opt/GE-Proton9-20"},
+			wantCommand: "/opt/GE-Proton9-20/proton",
+			wantArgs:    []string{"run", "server.exe", "-batchmode"},
+		},
+		{
+			name: "proton runner with windows_display nests under xvfb-run",
+			cfg: TaskConfig{
+				Platform:       "windows",
+				WindowsDisplay: true,
+				Launch:         &LaunchConfig{Command: "server.exe"},
+			},
+			rt:          windowsRuntime{Runner: "proton", ProtonPath: "/opt/GE-Proton9-20/proton"},
+			wantCommand: "xvfb-run",
+			wantArgs:    []string{"--auto-servernum", "/opt/GE-Proton9-20/proton", "run", "server.exe"},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotCommand, gotArgs := buildLaunchCommand(tc.cfg)
+			gotCommand, gotArgs := buildLaunchCommand(tc.cfg, tc.rt)
 			if gotCommand != tc.wantCommand {
 				t.Errorf("command = %q, want %q", gotCommand, tc.wantCommand)
 			}

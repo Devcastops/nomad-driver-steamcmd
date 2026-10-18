@@ -234,7 +234,21 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	// "xvfb-run" must be left alone for $PATH lookup -- both have broken
 	// in production at different points, so this now has its own tested
 	// function rather than being inline logic easy to regress again.
-	launchCommand, launchArgs := buildLaunchCommand(taskCfg)
+	var rt windowsRuntime
+	if taskCfg.Platform == "windows" {
+		home, _ := os.UserHomeDir()
+		var rerr error
+		rt, rerr = resolveWindowsRuntime(taskCfg, d.config, cfg.TaskDir().Dir, home)
+		if rerr == nil {
+			rerr = rt.prepare()
+		}
+		if rerr != nil {
+			d.tasks.Delete(cfg.ID)
+			return nil, nil, rerr
+		}
+		h.state.WineCleanup = rt.cleanup()
+	}
+	launchCommand, launchArgs := buildLaunchCommand(taskCfg, rt)
 	launchPath := resolveLaunchPath(launchCommand, installDir)
 
 	launchCmd := exec.CommandContext(h.ctx, launchPath, launchArgs...)
@@ -244,8 +258,8 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	launchCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	env := os.Environ()
-	if winePrefix := resolveWinePrefix(taskCfg.WinePrefix, d.config.DefaultWinePrefix); winePrefix != "" {
-		env = append(env, "WINEPREFIX="+winePrefix)
+	if taskCfg.Platform == "windows" {
+		env = append(env, rt.env(taskCfg.AppID, installDir)...)
 	}
 	for k, v := range taskCfg.Launch.Env {
 		env = append(env, k+"="+v)
@@ -382,11 +396,22 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 
 	select {
 	case <-h.doneCh:
-		return nil
 	case <-time.After(timeout):
 		d.logger.Warn("task did not exit within kill_timeout, sending SIGKILL", "task_id", taskID, "timeout", timeout)
 		_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
-		return nil
+	}
+	d.cleanupWine(h)
+	return nil
+}
+
+// cleanupWine kills the prefix's lingering wineserver, which daemonizes and
+// escapes the task's process group.
+func (d *Driver) cleanupWine(h *taskHandle) {
+	h.stateLock.Lock()
+	c := h.state.WineCleanup
+	h.stateLock.Unlock()
+	if err := c.run(10 * time.Second); err != nil {
+		d.logger.Debug("wineserver -k failed (likely nothing left running)", "error", err)
 	}
 }
 
@@ -407,6 +432,7 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 		if cmd != nil && cmd.Process != nil {
 			_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
 		}
+		d.cleanupWine(h)
 	}
 	h.cancel()
 	d.tasks.Delete(taskID)
@@ -506,7 +532,7 @@ func resolveWinePrefix(task, plugin string) string {
 // display at all. Forcing Xvfb unconditionally onto every windows-
 // platform task would reintroduce failure surface (stale display locks,
 // an extra runtime dependency) this driver deliberately made opt-in.
-func buildLaunchCommand(cfg TaskConfig) (command string, args []string) {
+func buildLaunchCommand(cfg TaskConfig, rt windowsRuntime) (command string, args []string) {
 	command = cfg.Launch.Command
 	args = cfg.Launch.Args
 
@@ -517,8 +543,9 @@ func buildLaunchCommand(cfg TaskConfig) (command string, args []string) {
 	// Platform=="windows" always needs wine to execute the downloaded
 	// Windows binary on a Linux client -- unlike the display, this part
 	// is safe and correct to automate unconditionally.
-	args = append([]string{command}, args...)
-	command = "wine"
+	runExe, runPre := rt.executable()
+	args = append(append(append([]string{}, runPre...), command), args...)
+	command = runExe
 
 	if cfg.WindowsDisplay {
 		args = append([]string{"--auto-servernum", command}, args...)

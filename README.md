@@ -81,6 +81,13 @@ config {
   # default_wine_prefix if both are set; only meaningful with platform="windows"
   wine_prefix = ""
 
+  # Windows runner (platform="windows" only). "wine" (default) or "proton" --
+  # see "Running Windows servers under Proton" below.
+  runner             = "wine"
+  proton_path        = ""   # Proton dir (contains `proton`); overrides default_proton_path
+  compat_data_path   = ""   # STEAM_COMPAT_DATA_PATH; default local/compat (per task)
+  compat_client_path = ""   # STEAM_COMPAT_CLIENT_INSTALL_PATH; default ~/.steam/steam
+
   login_anonymous     = true   # or:
   login_username      = ""
   login_password      = ""     # literal, or:
@@ -176,6 +183,69 @@ the server is a Windows binary; Xvfb because this particular server
 apparently wants a display even in "dedicated" mode -- confirmed working
 by the community for this app, not something this driver does anything
 special for beyond getting the right binary downloaded in the first place).
+
+### Running Windows servers under Proton
+
+Set `runner = "proton"` (per task, or `default_runner` fleet-wide) to run
+`platform = "windows"` tasks through a pinned [Proton](https://github.com/ValveSoftware/Proton)
+/ [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) build
+instead of whatever `wine` the distro ships. `wine` stays the default, so
+existing jobs are unaffected.
+
+```hcl
+config {
+  app_id           = "2915550"
+  platform         = "windows"
+  runner           = "proton"
+  proton_path      = "/opt/GE-Proton9-20"   # absolute; dir containing the `proton` script
+  compat_data_path = "local/compat"         # default; Proton creates pfx/ underneath
+  windows_display  = true                   # still opt-in, same as wine
+
+  launch {
+    command = "FoundryDedicatedServer.exe"
+    args    = ["-batchmode", "-nographics"]
+  }
+}
+```
+
+This runs `<proton_path>/proton run FoundryDedicatedServer.exe ...` (wrapped
+in `xvfb-run --auto-servernum` if `windows_display`) and sets
+`STEAM_COMPAT_DATA_PATH`, `STEAM_COMPAT_CLIENT_INSTALL_PATH` (defaults to
+`~/.steam/steam` if it exists, else the compat dir), `STEAM_COMPAT_INSTALL_PATH`,
+`SteamAppId` and `SteamGameId`. `WINEPREFIX`/`wine_prefix` are **not** used
+with Proton -- the prefix is `<compat_data_path>/pfx`.
+
+Install Proton on the client by unpacking a release tarball somewhere
+stable (e.g. `/opt/GE-Proton9-20`); the driver never downloads it.
+
+**Prefix sharing.** The default `compat_data_path` is per task, so each
+task gets its own prefix and the first run pays Proton's prefix-creation
+cost. Don't point two *concurrently running* tasks at one prefix. To share
+one between sequential tasks (see below), give them the same absolute path,
+e.g. `${NOMAD_ALLOC_DIR}/data/compat`.
+
+**Stopping.** `wineserver` daemonizes and escapes the task's process
+group, so after a stop/kill the driver also runs `wineserver -k` against the
+task's prefix (Proton's bundled `wineserver`, or the system one for the
+`wine` runner). This is persisted, so it also works for tasks recovered
+after a client restart.
+
+### Separating install, prefix setup and run (prestart tasks)
+
+Install and run don't have to live in one task. Because a task with no
+`launch` block is install-only, you can use Nomad `lifecycle { hook = "prestart" }`
+tasks to keep the steps apart, sharing state through the allocation's
+shared `data` dir with absolute paths:
+
+1. `install` (prestart): `app_id` + `install_dir`, no `launch` -- downloads and exits.
+2. `prefix` (prestart): launches `wineboot --init` under the runner so the
+   (slow) prefix creation happens before the server starts.
+3. `server` (main): `launch` only. With `update_on_start = false` (the default)
+   and a populated `install_dir`, steamcmd is skipped entirely.
+
+See `example/foundry-proton.nomad.hcl`. The server task still needs
+`app_id`, `platform` and the same `install_dir`/`compat_data_path`
+values (only the `app_id` is used for `SteamAppId`; steamcmd is skipped).
 
 ### Setting up Wine + Xvfb on the client node
 
@@ -322,6 +392,8 @@ plugin "nomad-driver-steamcmd" {
     default_wine_prefix          = ""         # fleet-wide WINEPREFIX default;
                                                # task-level wine_prefix overrides
                                                # this if both are set
+    default_runner               = ""         # "wine" (default) | "proton"
+    default_proton_path          = ""         # fleet-wide Proton dir
   }
 }
 ```

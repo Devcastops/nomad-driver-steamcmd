@@ -33,6 +33,8 @@ type PluginConfig struct {
 	DefaultLoginPassword     string `codec:"default_login_password"`
 	DefaultLoginPasswordFile string `codec:"default_login_password_file"`
 	DefaultWinePrefix        string `codec:"default_wine_prefix"`
+	DefaultRunner            string `codec:"default_runner"`
+	DefaultProtonPath        string `codec:"default_proton_path"`
 	InstallRoot              string `codec:"install_root"`
 	MaxConcurrent            int    `codec:"max_concurrent_installs"`
 }
@@ -81,6 +83,14 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		hclspec.NewAttr("default_wine_prefix", "string", false),
 		hclspec.NewLiteral(`""`),
 	),
+	"default_runner": hclspec.NewDefault(
+		hclspec.NewAttr("default_runner", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"default_proton_path": hclspec.NewDefault(
+		hclspec.NewAttr("default_proton_path", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
 })
 
 // TaskConfig is the per-task configuration set in a job spec's
@@ -96,6 +106,10 @@ type TaskConfig struct {
 	Validate          bool          `codec:"validate"`
 	Platform          string        `codec:"platform"`
 	WinePrefix        string        `codec:"wine_prefix"`
+	Runner            string        `codec:"runner"`
+	ProtonPath        string        `codec:"proton_path"`
+	CompatDataPath    string        `codec:"compat_data_path"`
+	CompatClientPath  string        `codec:"compat_client_path"`
 	WindowsDisplay    bool          `codec:"windows_display"`
 	LoginAnonymous    bool          `codec:"login_anonymous"`
 	LoginUsername     string        `codec:"login_username"`
@@ -174,6 +188,22 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	),
 	"wine_prefix": hclspec.NewDefault(
 		hclspec.NewAttr("wine_prefix", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"runner": hclspec.NewDefault(
+		hclspec.NewAttr("runner", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"proton_path": hclspec.NewDefault(
+		hclspec.NewAttr("proton_path", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"compat_data_path": hclspec.NewDefault(
+		hclspec.NewAttr("compat_data_path", "string", false),
+		hclspec.NewLiteral(`""`),
+	),
+	"compat_client_path": hclspec.NewDefault(
+		hclspec.NewAttr("compat_client_path", "string", false),
 		hclspec.NewLiteral(`""`),
 	),
 	"windows_display": hclspec.NewDefault(

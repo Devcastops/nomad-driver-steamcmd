@@ -36,6 +36,10 @@ type taskState struct {
 	StartedAt  time.Time
 	AppID      string
 	InstallDir string
+
+	// WineCleanup, if set, is run (`wineserver -k`) after the process group
+	// is stopped. Persisted so recovered tasks can still clean up.
+	WineCleanup *wineCleanup
 }
 
 // taskHandle is the in-memory handle for a running (or installing) task.
