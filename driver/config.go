@@ -99,25 +99,26 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 // Login fields are flat here too (login_anonymous, not a nested login{}
 // block), for the same reason as PluginConfig above.
 type TaskConfig struct {
-	AppID             string        `codec:"app_id"`
-	InstallDir        string        `codec:"install_dir"`
-	Beta              string        `codec:"beta"`
-	BetaPassword      string        `codec:"beta_password"`
-	Validate          bool          `codec:"validate"`
-	Platform          string        `codec:"platform"`
-	WinePrefix        string        `codec:"wine_prefix"`
-	Runner            string        `codec:"runner"`
-	ProtonPath        string        `codec:"proton_path"`
-	CompatDataPath    string        `codec:"compat_data_path"`
-	CompatClientPath  string        `codec:"compat_client_path"`
-	WindowsDisplay    bool          `codec:"windows_display"`
-	LoginAnonymous    bool          `codec:"login_anonymous"`
-	LoginUsername     string        `codec:"login_username"`
-	LoginPassword     string        `codec:"login_password"`
-	LoginPasswordFile string        `codec:"login_password_file"`
-	Launch            *LaunchConfig `codec:"launch"`
-	UpdateOnStart     bool          `codec:"update_on_start"`
-	InstallTimeout    string        `codec:"install_timeout"`
+	AppID             string            `codec:"app_id"`
+	InstallDir        string            `codec:"install_dir"`
+	Beta              string            `codec:"beta"`
+	BetaPassword      string            `codec:"beta_password"`
+	Validate          bool              `codec:"validate"`
+	Platform          string            `codec:"platform"`
+	WinePrefix        string            `codec:"wine_prefix"`
+	Runner            string            `codec:"runner"`
+	ProtonPath        string            `codec:"proton_path"`
+	CompatDataPath    string            `codec:"compat_data_path"`
+	CompatClientPath  string            `codec:"compat_client_path"`
+	WindowsDisplay    bool              `codec:"windows_display"`
+	LoginAnonymous    bool              `codec:"login_anonymous"`
+	LoginUsername     string            `codec:"login_username"`
+	LoginPassword     string            `codec:"login_password"`
+	LoginPasswordFile string            `codec:"login_password_file"`
+	ConfigFiles       map[string]string `codec:"config_files"`
+	Launch            *LaunchConfig     `codec:"launch"`
+	UpdateOnStart     bool              `codec:"update_on_start"`
+	InstallTimeout    string            `codec:"install_timeout"`
 }
 
 // Login builds a LoginConfig from the task's flat login_* fields.
@@ -233,6 +234,10 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"login_password_file": hclspec.NewDefault(
 		hclspec.NewAttr("login_password_file", "string", false),
 		hclspec.NewLiteral(`""`),
+	),
+	"config_files": hclspec.NewDefault(
+		hclspec.NewAttr("config_files", "map(string)", false),
+		hclspec.NewLiteral("{}"),
 	),
 	"launch": hclspec.NewBlock("launch", false, launchSpec),
 })

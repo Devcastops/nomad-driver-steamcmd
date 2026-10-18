@@ -111,6 +111,16 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		taskCfg.InstallDir = "local/steamapp"
 	}
 
+	// Expose volume_mount destinations (CSI / host volumes) inside the task
+	// dir; see setupMounts for why the driver has to do this itself.
+	mountWarnings, merr := setupMounts(cfg.TaskDir().Dir, cfg.Mounts)
+	if merr != nil {
+		return nil, nil, merr
+	}
+	for _, w := range mountWarnings {
+		d.logger.Warn(w, "task_id", cfg.ID)
+	}
+
 	installDir := taskCfg.InstallDir
 	if !filepath.IsAbs(installDir) {
 		installDir = filepath.Join(cfg.TaskDir().Dir, installDir)
@@ -234,6 +244,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	// "xvfb-run" must be left alone for $PATH lookup -- both have broken
 	// in production at different points, so this now has its own tested
 	// function rather than being inline logic easy to regress again.
+	if len(taskCfg.ConfigFiles) > 0 {
+		if err := stageConfigFiles(cfg.TaskDir().Dir, installDir, taskCfg.ConfigFiles); err != nil {
+			d.tasks.Delete(cfg.ID)
+			return nil, nil, err
+		}
+	}
+
 	var rt windowsRuntime
 	if taskCfg.Platform == "windows" {
 		home, _ := os.UserHomeDir()

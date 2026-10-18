@@ -8,9 +8,9 @@ supervising the resulting binary as the task's tracked process.
 
 - **No filesystem/network isolation (`FSIsolationNone`, host networking
   only).** This is deliberately `raw_exec`-style rather than
-  container-style. It means CSI volumes staged by Nomad are visible to the
-  task with zero extra plumbing — no bind-mounting `TaskConfig.Mounts`
-  into a chroot — and it sidesteps container-network DNS/IPv6 flakiness
+  container-style. Nomad does no bind-mounting for such a driver, so the
+  driver itself symlinks every `volume_mount` (CSI or host volume) into the
+  task dir -- see "Volumes" below -- and it sidesteps container-network DNS/IPv6 flakiness
   entirely, since the task talks to Steam's CDN over the host's network
   stack directly.
 - **Every task gets its own `install_dir`** (defaults to `local/steamapp`,
@@ -63,6 +63,33 @@ supervising the resulting binary as the task's tracked process.
   before invoking steamcmd and fails fast with a clear task event rather
   than letting steamcmd hang/fail confusingly mid-download.
 
+## Volumes (`volume_mount`)
+
+CSI and host volumes work, with one rule: set the `volume_mount`
+`destination` to a path **relative to the task directory** (`data`; a
+leading `/` is ignored, so `/data` means `<task dir>/data`, not the host's
+`/data`). The driver symlinks `<task dir>/<destination>` to the volume's
+staged host path before install/launch, so `install_dir`, `compat_data_path`
+and game save paths can point into it:
+
+```hcl
+volume "data" { type = "csi" source = "my-nfs" ... }
+
+task "server" {
+  volume_mount { volume = "data" destination = "data" }
+  config {
+    install_dir      = "data/steamapp"
+    compat_data_path = "data/compat"
+  }
+}
+```
+
+Limits: `read_only = true` cannot be enforced (no isolation; the driver logs a
+warning), destinations that escape the task dir are rejected, and an
+existing non-empty directory at the destination is never replaced. Several
+tasks in one allocation (e.g. prestart install + server) can mount the same
+volume and see the same files.
+
 ## Task config reference
 
 ```hcl
@@ -92,6 +119,11 @@ config {
   login_username      = ""
   login_password      = ""     # literal, or:
   login_password_file = ""     # path to a file (e.g. rendered by `template`)
+
+  # Copied into install_dir after install and before launch (source -> destination).
+  # Source: relative to the task dir (or absolute). Destination: relative to install_dir.
+  # Lets a `template` rendered to local/ end up next to the game's binary.
+  config_files = { "local/server.json" = "server.json" }
 
   launch {                 # omit for an install-only task
     command = "local/steamapp/PalServer.sh"
@@ -230,22 +262,28 @@ task's prefix (Proton's bundled `wineserver`, or the system one for the
 `wine` runner). This is persisted, so it also works for tasks recovered
 after a client restart.
 
-### Separating install, prefix setup and run (prestart tasks)
+### Separating install from run (prestart tasks)
 
-Install and run don't have to live in one task. Because a task with no
-`launch` block is install-only, you can use Nomad `lifecycle { hook = "prestart" }`
-tasks to keep the steps apart, sharing state through the allocation's
-shared `data` dir with absolute paths:
+Install and run don't have to live in one task. A task with no `launch`
+block is install-only, so a Nomad `lifecycle { hook = "prestart" }` task can
+do the download and the main task only runs the server:
 
 1. `install` (prestart): `app_id` + `install_dir`, no `launch` -- downloads and exits.
-2. `prefix` (prestart): launches `wineboot --init` under the runner so the
-   (slow) prefix creation happens before the server starts.
-3. `server` (main): `launch` only. With `update_on_start = false` (the default)
+2. `server` (main): `launch` only. With `update_on_start = false` (the default)
    and a populated `install_dir`, steamcmd is skipped entirely.
 
-See `example/foundry-proton.nomad.hcl`. The server task still needs
-`app_id`, `platform` and the same `install_dir`/`compat_data_path`
-values (only the `app_id` is used for `SteamAppId`; steamcmd is skipped).
+Both tasks must point at the same storage: use a `volume_mount` (see
+"Volumes") with the same `install_dir`/`compat_data_path`, or an absolute
+path under `${NOMAD_ALLOC_DIR}/data`. Note that **Nomad runs prestart tasks
+in parallel, not in order**, so only put one task that writes `install_dir` in
+the prestart phase. Proton creates its prefix itself on first `proton run`,
+so no separate prefix-setup task is needed.
+
+Nomad also renders `template` blocks *before* the driver starts, i.e. before
+install_dir or any volume symlink exists. Render config to `local/` and use
+`config_files` to copy it into `install_dir` at launch time.
+
+See `example/foundry-proton.nomad.hcl`.
 
 ### Setting up Wine + Xvfb on the client node
 

@@ -35,10 +35,10 @@ var PluginInfo = &base.PluginInfoResponse{
 }
 
 // Capabilities declares what this driver supports. Notably: no FSIsolation
-// (we deliberately run raw_exec-style, no chroot/namespace) so that CSI
-// volume mounts staged by Nomad are visible to steamcmd/the launched
-// process without any bind-mount plumbing on our part, and NetIsolationModes
-// is host-only for the same reason.
+// (we deliberately run raw_exec-style, no chroot/namespace) and
+// NetIsolationModes is host-only for the same reason. Because Nomad does no
+// bind-mounting for a non-isolating driver, volume_mount destinations
+// (cfg.Mounts) are symlinked into the task dir by setupMounts in mounts.go.
 var driverCapabilities = &drivers.Capabilities{
 	SendSignals: true,
 	Exec:        false,

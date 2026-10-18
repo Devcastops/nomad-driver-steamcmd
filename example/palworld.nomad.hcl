@@ -13,7 +13,7 @@ job "palworld" {
 
       volume_mount {
         volume      = "palworld-data"
-        destination = "/data"
+        destination = "data" # symlinked to <task dir>/data by the driver
       }
 
       # Only needed if this task should use a non-anonymous account that
@@ -42,7 +42,7 @@ job "palworld" {
           command = "local/steamapp/PalServer.sh"
           args    = ["-port=8211", "-players=16", "-publiclobby"]
           env = {
-            SAVE_DIR = "/data"
+            SAVE_DIR = "${NOMAD_TASK_DIR}/../data" # task dir / data
           }
         }
       }
