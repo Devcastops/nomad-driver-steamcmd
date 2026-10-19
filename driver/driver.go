@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/client/lib/cpustats"
 	"github.com/hashicorp/nomad/drivers/shared/eventer"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
@@ -55,6 +56,7 @@ type Driver struct {
 	eventer     *eventer.Eventer
 	config      PluginConfig
 	nomadConfig *base.ClientDriverConfig
+	compute     cpustats.Compute // node CPU capacity, used to report TotalTicks
 
 	tasks  sync.Map // task ID -> *taskHandle
 	ctx    context.Context
@@ -98,6 +100,7 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	d.config = pluginConfig
 	if cfg.AgentConfig != nil {
 		d.nomadConfig = cfg.AgentConfig.Driver
+		d.compute = cfg.AgentConfig.Compute()
 	}
 	if pluginConfig.MaxConcurrent > 0 {
 		d.installSem = make(chan struct{}, pluginConfig.MaxConcurrent)

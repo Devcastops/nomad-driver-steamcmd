@@ -283,6 +283,9 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	if taskCfg.Platform == "windows" {
 		env = append(env, rt.env(taskCfg.AppID, installDir)...)
 	}
+	// Marks every process in this task (including ones Wine reparents away
+	// from the launched wrapper) so TaskStats can find them. See stats.go.
+	env = append(env, taskMarkerEnv+"="+cfg.ID)
 	for k, v := range taskCfg.Launch.Env {
 		env = append(env, k+"="+v)
 	}
@@ -507,7 +510,7 @@ func (d *Driver) TaskStats(ctx context.Context, taskID string, interval time.Dur
 	}
 	h := v.(*taskHandle)
 	ch := make(chan *drivers.TaskResourceUsage)
-	go pollStats(ctx, h, interval, ch)
+	go pollStats(ctx, h, interval, d.compute, ch)
 	return ch, nil
 }
 

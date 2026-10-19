@@ -4,8 +4,6 @@ import (
 	"os"
 	"syscall"
 	"testing"
-
-	"github.com/shirou/gopsutil/v3/process"
 )
 
 func TestResolveWinePrefix(t *testing.T) {
@@ -177,26 +175,5 @@ func TestSignalProcessGroup_NonexistentPIDReturnsProcessDone(t *testing.T) {
 	err := signalProcessGroup(definitelyNotARealPID, syscall.SIGTERM)
 	if err != os.ErrProcessDone {
 		t.Errorf("signalProcessGroup on a nonexistent PID = %v, want os.ErrProcessDone", err)
-	}
-}
-
-func TestSumProcessTree_DoesNotErrorOnCurrentProcess(t *testing.T) {
-	// A full multi-process parent/child aggregation test would need to
-	// actually spawn and wait on real child processes, which is flaky in
-	// a CI sandbox. This is a lighter sanity check: sumProcessTree must
-	// run cleanly (no panic) against a real, currently-running process
-	// and return non-negative values, proving the recursion terminates
-	// and the gopsutil calls are wired correctly even with no children.
-	proc, err := process.NewProcess(int32(os.Getpid()))
-	if err != nil {
-		t.Fatalf("process.NewProcess(self) failed: %v", err)
-	}
-
-	cpuPct, rss := sumProcessTree(proc)
-	if cpuPct < 0 {
-		t.Errorf("sumProcessTree cpuPct = %v, want >= 0", cpuPct)
-	}
-	if rss == 0 {
-		t.Error("sumProcessTree rss = 0 for the current live process, want > 0")
 	}
 }
