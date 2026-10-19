@@ -116,6 +116,7 @@ type TaskConfig struct {
 	LoginPassword     string              `codec:"login_password"`
 	LoginPasswordFile string              `codec:"login_password_file"`
 	ConfigFiles       []map[string]string `codec:"config_files"`
+	FollowLogs        []string            `codec:"follow_logs"`
 	Launch            *LaunchConfig       `codec:"launch"`
 	UpdateOnStart     bool                `codec:"update_on_start"`
 	InstallTimeout    string              `codec:"install_timeout"`
@@ -239,6 +240,10 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		// list(map(string)), not map(string): Nomad's job parser wraps an HCL
 		// map in a list (same as the docker driver's labels/sysctl).
 		hclspec.NewAttr("config_files", "list(map(string))", false),
+		hclspec.NewLiteral("[]"),
+	),
+	"follow_logs": hclspec.NewDefault(
+		hclspec.NewAttr("follow_logs", "list(string)", false),
 		hclspec.NewLiteral("[]"),
 	),
 	"launch": hclspec.NewBlock("launch", false, launchSpec),

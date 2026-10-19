@@ -125,6 +125,10 @@ config {
   # Lets a `template` rendered to local/ end up next to the game's binary.
   config_files = { "local/server.json" = "server.json" }
 
+  # Stream these log files (relative to install_dir, or absolute) into the task's
+  # stdout so `nomad alloc logs` shows them. For servers that log only to a file.
+  follow_logs = ["logs/server.log"]
+
   launch {                 # omit for an install-only task
     command = "local/steamapp/PalServer.sh"
     args    = ["-port=8211"]
@@ -261,6 +265,22 @@ group, so after a stop/kill the driver also runs `wineserver -k` against the
 task's prefix (Proton's bundled `wineserver`, or the system one for the
 `wine` runner). This is persisted, so it also works for tasks recovered
 after a client restart.
+
+### Getting file-only server logs into `nomad alloc logs`
+
+Some servers (Enshrouded, for one) write their log to a file and print nothing to stdout.
+`follow_logs = ["logs/enshrouded_server.log"]` makes the driver follow those files and write
+new lines to the task's stdout, so `nomad alloc logs -f <alloc>` and the UI show them.
+
+- Paths are relative to `install_dir` (the process's working directory) or absolute.
+- A file that already exists at launch is treated as the previous run's and skipped. If the
+  game then replaces it (rotates to a new file) it is followed from the start; if it is
+  appended to, only the new lines are shown; if it is truncated, following restarts at the top.
+- It polls (every 500 ms) rather than using inotify, so it works on NFS/CSI volumes.
+- Partial lines are held until their newline arrives and flushed when the task ends.
+- Limitations: it is not re-attached for a task recovered after the *plugin process* itself
+  restarts (the log file is still written, just not streamed until the next start), and an
+  in-place rewrite that is already as long as before by the next poll cannot be told from an append.
 
 ### Separating install from run (prestart tasks)
 

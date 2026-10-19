@@ -268,6 +268,11 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	launchCommand, launchArgs := buildLaunchCommand(taskCfg, rt)
 	launchPath := resolveLaunchPath(launchCommand, installDir)
 
+	// Snapshot followed log files BEFORE the process starts so leftovers from a
+	// previous run can be told apart from this run's output (see snapshotFiles).
+	followPaths := resolveFollowPaths(installDir, taskCfg.FollowLogs)
+	staleLogs := snapshotFiles(followPaths)
+
 	launchCmd := exec.CommandContext(h.ctx, launchPath, launchArgs...)
 	launchCmd.Dir = installDir
 	launchCmd.Stdout = stdout
@@ -318,6 +323,34 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
 		Message: fmt.Sprintf("launched %s (pid %d)", launchPath, launchCmd.Process.Pid)})
 
+	// Many game servers log only to a file. Follow those files into the
+	// task's stdout so `nomad alloc logs` shows them. The follower opens its
+	// own handle on the stdout fifo because StartTask's deferred closeLogs()
+	// closes ours once this function returns.
+	var stopFollow func()
+	if len(followPaths) > 0 {
+		if lw, lerr := os.OpenFile(cfg.StdoutPath, os.O_WRONLY|os.O_APPEND, 0o644); lerr != nil {
+			d.logger.Warn("follow_logs disabled: cannot open task stdout", "task_id", cfg.ID, "error", lerr)
+		} else {
+			fctx, fcancel := context.WithCancel(context.Background())
+			fdone := make(chan struct{})
+			go func() {
+				defer close(fdone)
+				defer lw.Close()
+				followLogs(fctx, followPaths, staleLogs, lw, logPollInterval)
+			}()
+			stopFollow = func() {
+				fcancel()
+				select {
+				case <-fdone:
+				case <-time.After(3 * time.Second):
+				}
+			}
+			d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
+				Message: fmt.Sprintf("following %d log file(s) into task stdout", len(followPaths))})
+		}
+	}
+
 	// The launched process is long-running by design (a game server);
 	// StartTask must not block on it. Supervise it in the background --
 	// closeLogs is deferred here rather than in the outer StartTask defer
@@ -325,6 +358,9 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	go func() {
 		defer closeLogs()
 		waitErr := launchCmd.Wait()
+		if stopFollow != nil {
+			stopFollow() // final drain before the log handles close
+		}
 		h.stateLock.Lock()
 		h.completedAt = time.Now()
 		h.procState = drivers.TaskStateExited
