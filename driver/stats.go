@@ -68,7 +68,8 @@ func newUsageCollector(key string, rootPid int32, compute cpustats.Compute) *usa
 }
 
 // hasMarker reports whether a /proc/<pid>/environ blob (NUL-separated
-// KEY=VALUE entries) contains exactly marker as one of its entries.
+// KEY=VALUE entries) contains marker as one of its entries (see below for the
+// accepted legacy form).
 func hasMarker(environ, marker []byte) bool {
 	for len(environ) > 0 {
 		end := bytes.IndexByte(environ, 0)
@@ -78,7 +79,11 @@ func hasMarker(environ, marker []byte) bool {
 		} else {
 			entry, environ = environ[:end], environ[end+1:]
 		}
-		if bytes.Equal(entry, marker) {
+		// Exact match, or the longer "<alloc>/<task>/<hash>" form that v0.4.3
+		// wrote (the full Nomad task ID), so instances started by that
+		// version can still be found and re-adopted.
+		if bytes.Equal(entry, marker) ||
+			(bytes.HasPrefix(entry, marker) && len(entry) > len(marker) && entry[len(marker)] == '/') {
 			return true
 		}
 	}

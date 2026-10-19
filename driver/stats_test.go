@@ -12,19 +12,22 @@ import (
 )
 
 func TestHasMarker(t *testing.T) {
-	m := []byte("STEAMCMD_TASK_ID=abc/server/1")
+	m := []byte("STEAMCMD_TASK_ID=abc/server")
 	cases := []struct {
 		name string
 		env  string
 		want bool
 	}{
-		{"present", "A=1\x00STEAMCMD_TASK_ID=abc/server/1\x00B=2\x00", true},
-		{"present, no trailing NUL", "A=1\x00STEAMCMD_TASK_ID=abc/server/1", true},
-		{"only entry", "STEAMCMD_TASK_ID=abc/server/1\x00", true},
-		{"different task", "STEAMCMD_TASK_ID=xyz/server/1\x00", false},
-		{"prefix of another id must not match", "STEAMCMD_TASK_ID=abc/server/10\x00", false},
-		{"value embedded in another variable", "X=STEAMCMD_TASK_ID=abc/server/1\x00", false},
+		{"present", "A=1\x00STEAMCMD_TASK_ID=abc/server\x00B=2\x00", true},
+		{"present, no trailing NUL", "A=1\x00STEAMCMD_TASK_ID=abc/server", true},
+		{"only entry", "STEAMCMD_TASK_ID=abc/server\x00", true},
+		{"different alloc", "STEAMCMD_TASK_ID=xyz/server\x00", false},
+		{"task name that merely starts the same", "STEAMCMD_TASK_ID=abc/server2\x00", false},
+		{"value embedded in another variable", "X=STEAMCMD_TASK_ID=abc/server\x00", false},
 		{"empty", "", false},
+		{"legacy v0.4.3 form (full task id)", "STEAMCMD_TASK_ID=abc/server/deadbeef\x00", true},
+		{"legacy form of a different task name", "STEAMCMD_TASK_ID=abc/server2/deadbeef\x00", false},
+		{"legacy form of a different alloc", "STEAMCMD_TASK_ID=xyz/server/deadbeef\x00", false},
 	}
 	for _, tc := range cases {
 		if got := hasMarker([]byte(tc.env), m); got != tc.want {
