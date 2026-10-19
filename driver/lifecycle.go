@@ -68,27 +68,40 @@ func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
 		if state.Pid == 0 {
 			return fmt.Errorf("cannot recover running task %s: no PID recorded", handle.Config.ID)
 		}
-		proc, err := os.FindProcess(state.Pid)
-		if err != nil {
-			h.setPhase(phaseExited)
-			d.tasks.Store(handle.Config.ID, h)
-			return nil
-		}
-		// FindProcess always succeeds on unix; confirm liveness explicitly.
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			d.logger.Info("recovered task process is no longer alive", "task_id", handle.Config.ID, "pid", state.Pid)
+		// Re-adopt by looking at the whole task (marked processes plus the
+		// wrapper's tree), not just the recorded PID: the real workload may have
+		// been reparented away from the wrapper (Wine does this).
+		c := newUsageCollector(taskKey(handle.Config.AllocID, handle.Config.Name), int32(state.Pid), d.compute)
+		if len(c.liveMembers()) == 0 {
+			d.logger.Info("recovered task has no live processes", "task_id", handle.Config.ID, "pid", state.Pid)
 			h.setPhase(phaseExited)
 			h.stateLock.Lock()
 			h.procState = drivers.TaskStateExited
+			h.completedAt = time.Now()
 			h.exitResult = &drivers.ExitResult{ExitCode: -1, Err: fmt.Errorf("process not found on recovery")}
 			h.stateLock.Unlock()
+			close(h.doneCh)
 			d.tasks.Store(handle.Config.ID, h)
 			return nil
 		}
+		// os.FindProcess always succeeds on unix. Do NOT call Wait on it: after
+		// a plugin restart these are no longer our children and Wait fails
+		// immediately ("waitid: no child processes"), which used to make a
+		// healthy game server look dead. Poll for exit instead.
+		proc, _ := os.FindProcess(state.Pid)
 		h.cmd = &exec.Cmd{Process: proc}
 		h.startedAt = state.StartedAt
 		d.tasks.Store(handle.Config.ID, h)
-		go d.waitOnRecoveredProcess(h, proc)
+		d.logger.Info("re-adopted running task", "task_id", handle.Config.ID, "pid", state.Pid, "processes", len(c.liveMembers()))
+		// The follower goroutine died with the old plugin; start it again so the
+		// game's file log keeps flowing into `nomad alloc logs`.
+		var stopFollow func()
+		var taskCfg TaskConfig
+		if err := handle.Config.DecodeDriverConfig(&taskCfg); err == nil {
+			paths := resolveFollowPaths(state.InstallDir, taskCfg.FollowLogs)
+			stopFollow = d.startLogFollowers(handle.Config, paths, snapshotFiles(paths))
+		}
+		go d.watchRecovered(h, c, stopFollow)
 		return nil
 
 	default:
@@ -165,6 +178,20 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return nil, nil, fmt.Errorf("failed to open task log files: %w", err)
 	}
 	defer closeLogs()
+
+	// Before touching anything (an update would rewrite files under a running
+	// server): is an earlier instance of this task still running? Bind to it
+	// instead of starting a second copy. See adoptOrReap.
+	if taskCfg.Launch != nil {
+		adopted, aerr := d.adoptOrReap(cfg, taskCfg, h, installDir)
+		if aerr != nil {
+			d.tasks.Delete(cfg.ID)
+			return nil, nil, aerr
+		}
+		if adopted != nil {
+			return adopted, nil, nil
+		}
+	}
 
 	// If update_on_start is false and this looks like a re-launch of an
 	// already-installed app (a launch phase is configured and installDir
@@ -285,7 +312,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 	// Marks every process in this task (including ones Wine reparents away
 	// from the launched wrapper) so TaskStats can find them. See stats.go.
-	env = append(env, taskMarkerEnv+"="+cfg.ID)
+	env = append(env, string(taskMarker(taskKey(cfg.AllocID, cfg.Name))))
 	for k, v := range taskCfg.Launch.Env {
 		env = append(env, k+"="+v)
 	}
@@ -326,33 +353,8 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
 		Message: fmt.Sprintf("launched %s (pid %d)", launchPath, launchCmd.Process.Pid)})
 
-	// Many game servers log only to a file. Follow those files into the
-	// task's stdout so `nomad alloc logs` shows them. The follower opens its
-	// own handle on the stdout fifo because StartTask's deferred closeLogs()
-	// closes ours once this function returns.
-	var stopFollow func()
-	if len(followPaths) > 0 {
-		if lw, lerr := os.OpenFile(cfg.StdoutPath, os.O_WRONLY|os.O_APPEND, 0o644); lerr != nil {
-			d.logger.Warn("follow_logs disabled: cannot open task stdout", "task_id", cfg.ID, "error", lerr)
-		} else {
-			fctx, fcancel := context.WithCancel(context.Background())
-			fdone := make(chan struct{})
-			go func() {
-				defer close(fdone)
-				defer lw.Close()
-				followLogs(fctx, followPaths, staleLogs, lw, logPollInterval)
-			}()
-			stopFollow = func() {
-				fcancel()
-				select {
-				case <-fdone:
-				case <-time.After(3 * time.Second):
-				}
-			}
-			d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
-				Message: fmt.Sprintf("following %d log file(s) into task stdout", len(followPaths))})
-		}
-	}
+	// Many game servers log only to a file; stream those into the task's stdout.
+	stopFollow := d.startLogFollowers(cfg, followPaths, staleLogs)
 
 	// The launched process is long-running by design (a game server);
 	// StartTask must not block on it. Supervise it in the background --
@@ -384,17 +386,22 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	return handle, nil, nil
 }
 
-func (d *Driver) waitOnRecoveredProcess(h *taskHandle, proc *os.Process) {
-	ps, err := proc.Wait()
+// watchRecovered reports a re-adopted task as exited once none of its
+// processes remain. The real exit status is unknowable (we are not the
+// parent), so it is reported as -1.
+func (d *Driver) watchRecovered(h *taskHandle, c *usageCollector, onExit func()) {
+	if onExit != nil {
+		defer onExit()
+	}
+	if !waitForExit(h.ctx, c, 2*time.Second) {
+		return // destroyed first
+	}
 	h.stateLock.Lock()
-	defer h.stateLock.Unlock()
 	h.completedAt = time.Now()
 	h.procState = drivers.TaskStateExited
-	if err != nil {
-		h.exitResult = &drivers.ExitResult{ExitCode: -1, Err: err}
-	} else {
-		h.exitResult = &drivers.ExitResult{ExitCode: ps.ExitCode()}
-	}
+	h.exitResult = &drivers.ExitResult{ExitCode: -1}
+	h.stateLock.Unlock()
+	h.setPhase(phaseExited)
 	close(h.doneCh)
 }
 
@@ -446,18 +453,31 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 		}
 	}
 
-	if err := signalProcessGroup(cmd.Process.Pid, sig); err != nil && err != os.ErrProcessDone {
-		d.logger.Warn("failed to send stop signal, will escalate to SIGKILL", "task_id", taskID, "error", err)
+	// Stop every process of the task, not just the wrapper's process group:
+	// Wine puts the game in its own group, so signalling the wrapper's group
+	// never reaches it. The workload gets sig and `timeout` to exit; wineserver
+	// and Xvfb are stopped only afterwards so the game can finish saving.
+	c := d.collectorFor(h)
+	if !terminateProcesses("/proc", c.liveMembers, sig, timeout, d.logger) {
+		d.logger.Warn("some task processes survived stop", "task_id", taskID)
 	}
-
 	select {
 	case <-h.doneCh:
-	case <-time.After(timeout):
-		d.logger.Warn("task did not exit within kill_timeout, sending SIGKILL", "task_id", taskID, "timeout", timeout)
-		_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+	case <-time.After(5 * time.Second):
 	}
 	d.cleanupWine(h)
 	return nil
+}
+
+// collectorFor builds a process collector for h's task (marker + wrapper tree).
+func (d *Driver) collectorFor(h *taskHandle) *usageCollector {
+	var root int32
+	h.mu.RLock()
+	if h.cmd != nil && h.cmd.Process != nil {
+		root = int32(h.cmd.Process.Pid)
+	}
+	h.mu.RUnlock()
+	return newUsageCollector(taskKey(h.taskConfig.AllocID, h.taskConfig.Name), root, d.compute)
 }
 
 // cleanupWine kills the prefix's lingering wineserver, which daemonizes and
@@ -482,12 +502,7 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 		if !force {
 			return fmt.Errorf("cannot destroy running task %s without force", taskID)
 		}
-		h.mu.RLock()
-		cmd := h.cmd
-		h.mu.RUnlock()
-		if cmd != nil && cmd.Process != nil {
-			_ = signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
-		}
+		signalPIDs(d.collectorFor(h).liveMembers(), syscall.SIGKILL)
 		d.cleanupWine(h)
 	}
 	h.cancel()
@@ -534,7 +549,18 @@ func (d *Driver) SignalTask(taskID string, signal string) error {
 	if err != nil {
 		return err
 	}
-	return signalProcessGroup(cmd.Process.Pid, sig)
+	// Signal the workload (everything but wineserver/Xvfb), wherever Wine put it.
+	var work []int32
+	for _, pid := range d.collectorFor(h).liveMembers() {
+		if !supportComms[procComm("/proc", pid)] {
+			work = append(work, pid)
+		}
+	}
+	if len(work) == 0 {
+		return signalProcessGroup(cmd.Process.Pid, sig)
+	}
+	signalPIDs(work, sig)
+	return nil
 }
 
 func (d *Driver) ExecTask(taskID string, cmdArgs []string, timeout time.Duration) (*drivers.ExecTaskResult, error) {

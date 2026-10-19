@@ -12,9 +12,11 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 )
 
-// taskMarkerEnv is set (to the Nomad task ID) in the environment of every
-// process this driver launches. Children inherit it, so it identifies the
-// whole workload even after processes leave the launched process's tree.
+// taskMarkerEnv is set (to taskKey: "<alloc id>/<task name>") in the
+// environment of every process this driver launches. Children inherit it, so
+// it identifies the whole workload even after processes leave the launched
+// process's tree, and it stays the same across restarts of the task, which is
+// what lets a later start (or a restarted plugin) find an earlier instance.
 //
 // That matters here: Wine/Proton reparent the real game and wineserver to
 // init (ppid 1), so walking children of the launched wrapper (xvfb-run) finds
@@ -50,9 +52,12 @@ type usageCollector struct {
 	known map[int32]memberState
 }
 
-func newUsageCollector(taskID string, rootPid int32, compute cpustats.Compute) *usageCollector {
+// taskKey identifies a task across restarts and plugin restarts.
+func taskKey(allocID, taskName string) string { return allocID + "/" + taskName }
+
+func newUsageCollector(key string, rootPid int32, compute cpustats.Compute) *usageCollector {
 	return &usageCollector{
-		marker:  []byte(taskMarkerEnv + "=" + taskID),
+		marker:  taskMarker(key),
 		rootPid: rootPid,
 		compute: compute,
 		procDir: "/proc",
@@ -227,7 +232,7 @@ func pollStats(ctx context.Context, h *taskHandle, interval time.Duration, compu
 			continue
 		}
 		if c == nil {
-			c = newUsageCollector(h.taskConfig.ID, int32(cmd.Process.Pid), compute)
+			c = newUsageCollector(taskKey(h.taskConfig.AllocID, h.taskConfig.Name), int32(cmd.Process.Pid), compute)
 		}
 
 		usage := &drivers.TaskResourceUsage{
