@@ -3,6 +3,7 @@ package steamcmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,4 +114,183 @@ exit 0`)
 	require.NoError(t, err)
 	require.NotEmpty(t, messages)
 	require.Contains(t, messages[0], "12.34")
+}
+
+func TestRunInstall_FlagsStaleManifestError(t *testing.T) {
+	bin := fakeSteamcmd(t, `echo "Update state (0x0) unknown, progress: 0.00 (0 / 0)"
+echo "Error! App '2278520' state is 0x6 after update job."
+exit 8`)
+	var stdout, stderr bytes.Buffer
+
+	res, err := runInstall(context.Background(), bin, []string{"+quit"}, &stdout, &stderr, nil)
+	require.Error(t, err)
+	require.True(t, res.StaleManifest)
+}
+
+func TestRunInstall_OtherErrorsAreNotStaleManifest(t *testing.T) {
+	bin := fakeSteamcmd(t, `echo "Error! App '2278520' state is 0x202 after update job."
+exit 8`)
+	var stdout, stderr bytes.Buffer
+
+	res, err := runInstall(context.Background(), bin, []string{"+quit"}, &stdout, &stderr, nil)
+	require.Error(t, err)
+	require.False(t, res.StaleManifest)
+}
+
+// writeManifest creates steamapps/appmanifest_<appID>.acf under installDir
+// plus a savegame file that must survive any repair.
+func writeManifest(t *testing.T, installDir, appID string) (manifest, save string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(installDir, "steamapps"), 0o755))
+	manifest = filepath.Join(installDir, "steamapps", "appmanifest_"+appID+".acf")
+	require.NoError(t, os.WriteFile(manifest, []byte("stale"), 0o644))
+	save = filepath.Join(installDir, "savegame")
+	require.NoError(t, os.WriteFile(save, []byte("precious"), 0o644))
+	return manifest, save
+}
+
+var errStale = errors.New("steamcmd: install/update did not complete: App '2278520' state is 0x6 after update job.")
+
+func staleResult() *installResult { return &installResult{StaleManifest: true} }
+
+func TestInstallWithRepair_Disabled_DoesNothing(t *testing.T) {
+	dir := t.TempDir()
+	manifest, _ := writeManifest(t, dir, "2278520")
+	calls := 0
+
+	_, err := installWithRepair(context.Background(), false, dir, "2278520",
+		func() (*installResult, error) { calls++; return staleResult(), errStale },
+		func(string) { t.Fatal("onRepair must not be called when disabled") })
+
+	require.ErrorIs(t, err, errStale)
+	require.Equal(t, 1, calls)
+	require.FileExists(t, manifest)
+}
+
+func TestInstallWithRepair_RemovesManifestAndRetriesOnce(t *testing.T) {
+	dir := t.TempDir()
+	manifest, save := writeManifest(t, dir, "2278520")
+	calls := 0
+	var repaired []string
+
+	res, err := installWithRepair(context.Background(), true, dir, "2278520",
+		func() (*installResult, error) {
+			calls++
+			if calls == 1 {
+				return staleResult(), errStale
+			}
+			require.NoFileExists(t, manifest, "manifest must be gone before the retry")
+			return &installResult{Success: true}, nil
+		},
+		func(p string) { repaired = append(repaired, p) })
+
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	require.Equal(t, 2, calls)
+	require.Equal(t, []string{manifest}, repaired)
+	require.FileExists(t, save, "nothing but the manifest may be removed")
+}
+
+func TestInstallWithRepair_OnlyRetriesOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "2278520")
+	calls := 0
+
+	_, err := installWithRepair(context.Background(), true, dir, "2278520",
+		func() (*installResult, error) { calls++; return staleResult(), errStale },
+		func(string) {})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, errStale)
+	require.Contains(t, err.Error(), "retried once")
+	require.Equal(t, 2, calls)
+}
+
+func TestInstallWithRepair_NoManifestMeansNoRetry(t *testing.T) {
+	dir := t.TempDir()
+	calls := 0
+
+	_, err := installWithRepair(context.Background(), true, dir, "2278520",
+		func() (*installResult, error) { calls++; return staleResult(), errStale },
+		func(string) { t.Fatal("nothing was removed") })
+
+	require.ErrorIs(t, err, errStale)
+	require.Equal(t, 1, calls)
+}
+
+func TestInstallWithRepair_OtherFailuresAreLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	manifest, _ := writeManifest(t, dir, "2278520")
+	other := errors.New("steamcmd: authentication failed: x")
+	calls := 0
+
+	_, err := installWithRepair(context.Background(), true, dir, "2278520",
+		func() (*installResult, error) { calls++; return &installResult{AuthFailed: true}, other },
+		func(string) { t.Fatal("must not repair a non-stale failure") })
+
+	require.ErrorIs(t, err, other)
+	require.Equal(t, 1, calls)
+	require.FileExists(t, manifest)
+}
+
+func TestInstallWithRepair_RejectsNonNumericAppID(t *testing.T) {
+	dir := t.TempDir()
+	// The file an empty app_id would hit if it were joined into the path unchecked.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "steamapps"), 0o755))
+	victim := filepath.Join(dir, "steamapps", "appmanifest_.acf")
+	require.NoError(t, os.WriteFile(victim, []byte("x"), 0o644))
+	calls := 0
+
+	for _, id := range []string{"", "../x", "12 34", "1/../../2"} {
+		_, err := installWithRepair(context.Background(), true, dir, id,
+			func() (*installResult, error) { calls++; return staleResult(), errStale },
+			func(string) { t.Fatal("must not repair with an invalid app id") })
+		require.ErrorIs(t, err, errStale)
+	}
+	require.Equal(t, 4, calls)
+	require.FileExists(t, victim)
+}
+
+func TestInstallWithRepair_NoRetryWhenContextDone(t *testing.T) {
+	dir := t.TempDir()
+	manifest, _ := writeManifest(t, dir, "2278520")
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+
+	_, err := installWithRepair(ctx, true, dir, "2278520",
+		func() (*installResult, error) { calls++; cancel(); return staleResult(), errStale },
+		func(string) { t.Fatal("must not repair after cancellation") })
+
+	require.ErrorIs(t, err, errStale)
+	require.Equal(t, 1, calls)
+	require.FileExists(t, manifest)
+}
+
+func TestInstallWithRepair_EndToEndWithFakeSteamcmd(t *testing.T) {
+	// A fake steamcmd that fails with the 0x6 error exactly while a manifest
+	// exists in the install dir (arg 1) and succeeds once it is gone, like the
+	// real one did after the manifest was deleted by hand.
+	bin := fakeSteamcmd(t, `if [ -f "$1/steamapps/appmanifest_2278520.acf" ]; then
+  echo "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'."
+  echo "Error! App '2278520' state is 0x6 after update job."
+  exit 8
+fi
+echo "Success! App '2278520' fully installed."
+exit 0`)
+	dir := t.TempDir()
+	manifest, save := writeManifest(t, dir, "2278520")
+	var stdout, stderr bytes.Buffer
+	var repaired []string
+
+	res, err := installWithRepair(context.Background(), true, dir, "2278520",
+		func() (*installResult, error) {
+			return runInstall(context.Background(), bin, []string{dir}, &stdout, &stderr, nil)
+		},
+		func(p string) { repaired = append(repaired, p) })
+
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	require.Equal(t, []string{manifest}, repaired)
+	require.NoFileExists(t, manifest)
+	require.FileExists(t, save)
 }

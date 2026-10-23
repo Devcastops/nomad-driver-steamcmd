@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -24,6 +25,15 @@ var (
 	reProgress = regexp.MustCompile(`Update state \(0x[0-9a-fA-F]+\)\s+([a-zA-Z ,]+?),\s*progress:\s*([\d.]+)`)
 )
 
+// reStaleManifest matches steamcmd's terminal error when an installed app's
+// recorded depot manifest has been superseded and Steam refuses to serve it
+// ("Access Denied" in steamcmd's own content_log.txt). It downloads nothing
+// and exits with the app flagged out of date.
+var reStaleManifest = regexp.MustCompile(`App '\d+' state is 0x6 after update job`)
+
+// reAppID restricts app_id to digits before it is used to build a path.
+var reAppID = regexp.MustCompile(`^\d+$`)
+
 // progressThrottle is the minimum interval between progress TaskEvents.
 // steamcmd emits a progress line on nearly every line of output during a
 // download; emitting a Nomad TaskEvent for each would flood and evict the
@@ -33,11 +43,15 @@ const progressThrottle = 5 * time.Second
 
 // installResult is the outcome of a steamcmd install/update invocation,
 // derived from parsing stdout rather than trusting the exit code alone.
+// StaleManifest is set on "state is 0x6 after update job": the app is
+// installed but flagged out of date and steamcmd could not fetch the
+// update. See installWithRepair.
 type installResult struct {
-	Success    bool
-	AuthFailed bool
-	ExitCode   int
-	Message    string
+	Success       bool
+	AuthFailed    bool
+	StaleManifest bool
+	ExitCode      int
+	Message       string
 }
 
 // validSteamPlatforms are the platform values steamcmd's
@@ -154,6 +168,9 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 				result.Success = true
 				result.Message = line
 			}
+			if reStaleManifest.MatchString(line) {
+				result.StaleManifest = true
+			}
 			if reAuthErr.MatchString(line) {
 				result.AuthFailed = true
 				result.Message = line
@@ -223,6 +240,39 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 		result.Message = fmt.Sprintf("steamcmd exited %d with no success marker in output", result.ExitCode)
 	}
 	return result, fmt.Errorf("steamcmd: install/update did not complete: %s", result.Message)
+}
+
+// installWithRepair runs an install via run and, only if repair is true and
+// the install failed with the stale-manifest error (res.StaleManifest),
+// deletes install_dir/steamapps/appmanifest_<appID>.acf and runs it once
+// more. steamcmd then treats the app as not installed and downloads it
+// again.
+//
+// This removes only that one manifest file and never anything else under
+// installDir (saves and configs live there). If the manifest does not exist,
+// app_id is not purely numeric, or ctx is done, nothing is removed and the
+// original error is returned. If the retry fails too, its error is returned
+// with a note that a repair was attempted. onRepair is called with the
+// removed path before the retry so the caller can emit a task event.
+func installWithRepair(ctx context.Context, repair bool, installDir, appID string, run func() (*installResult, error), onRepair func(removedPath string)) (*installResult, error) {
+	res, err := run()
+	if err == nil || !repair || res == nil || !res.StaleManifest || ctx.Err() != nil {
+		return res, err
+	}
+	if !reAppID.MatchString(appID) {
+		return res, err
+	}
+	manifest := filepath.Join(installDir, "steamapps", "appmanifest_"+appID+".acf")
+	if rmErr := os.Remove(manifest); rmErr != nil {
+		return res, err
+	}
+	onRepair(manifest)
+
+	res, err = run()
+	if err != nil {
+		err = fmt.Errorf("%w (stale manifest %s was removed and the install retried once)", err, manifest)
+	}
+	return res, err
 }
 
 // statfsFree returns free bytes on the filesystem containing path, used

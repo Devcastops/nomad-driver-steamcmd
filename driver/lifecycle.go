@@ -228,9 +228,16 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		// stdout/stderr are wired directly, and a throttled human-readable
 		// summary is emitted as TaskEvents (`nomad alloc status`) via the
 		// onProgress callback below.
-		res, err := runInstall(installCtx, d.config.SteamCmdPath, args, stdout, stderr, func(msg string) {
-			d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(), Message: msg})
-		})
+		res, err := installWithRepair(installCtx, taskCfg.RepairManifest, installDir, taskCfg.AppID,
+			func() (*installResult, error) {
+				return runInstall(installCtx, d.config.SteamCmdPath, args, stdout, stderr, func(msg string) {
+					d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(), Message: msg})
+				})
+			},
+			func(removed string) {
+				d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
+					Message: fmt.Sprintf("steamcmd reported a stale app manifest (state 0x6); removed %s and retrying the install once", removed)})
+			})
 		release()
 		if err != nil {
 			d.tasks.Delete(cfg.ID)
