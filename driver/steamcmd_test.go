@@ -57,6 +57,58 @@ exit 5`)
 	require.True(t, res.AuthFailed)
 }
 
+func TestRunInstall_SetlocaleWarningIsNotAnAuthFailure(t *testing.T) {
+	// Regression test: steamcmd prints this harmless warning on every run
+	// where the locale isn't generated. It contains "failed", which the old
+	// case-insensitive bare-FAILED pattern treated as a login failure, so any
+	// unrelated install error was reported as "authentication failed".
+	bin := fakeSteamcmd(t, `echo "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'. International characters may not work."
+echo "Connecting anonymously to Steam Public...OK"
+echo "Error! App '2278520' state is 0x6 after update job."
+exit 8`)
+	var stdout, stderr bytes.Buffer
+
+	res, err := runInstall(context.Background(), bin, []string{"+quit"}, &stdout, &stderr, nil)
+	require.Error(t, err)
+	require.False(t, res.AuthFailed)
+	require.Contains(t, err.Error(), "install/update did not complete")
+	require.NotContains(t, err.Error(), "authentication failed")
+	require.Contains(t, err.Error(), "state is 0x6 after update job")
+}
+
+func TestRunInstall_SetlocaleWarningAfterErrorKeepsRealMessage(t *testing.T) {
+	// The setlocale line must not overwrite the real error message either,
+	// whichever order the two lines arrive in.
+	bin := fakeSteamcmd(t, `echo "Error! App '2278520' state is 0x6 after update job."
+echo "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'."
+exit 8`)
+	var stdout, stderr bytes.Buffer
+
+	_, err := runInstall(context.Background(), bin, []string{"+quit"}, &stdout, &stderr, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "state is 0x6 after update job")
+}
+
+func TestReAuthErr_Patterns(t *testing.T) {
+	for _, line := range []string{
+		"Logging in user 'someone' to Steam Public...FAILED (Invalid Password)",
+		"FAILED login with result code Invalid Password",
+		"Logging in user 'someone' to Steam Public...FAILED (Rate Limit Exceeded)",
+		"Login Failure: Account Logon Denied",
+		"Two-factor code mismatch",
+	} {
+		require.True(t, reAuthErr.MatchString(line), "should match: %q", line)
+	}
+	for _, line := range []string{
+		"WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'.",
+		"Connecting anonymously to Steam Public...OK",
+		"Error! App '2278520' state is 0x6 after update job.",
+		"Success! App '2278520' fully installed.",
+	} {
+		require.False(t, reAuthErr.MatchString(line), "should not match: %q", line)
+	}
+}
+
 func TestRunInstall_SuccessMarkerDespiteNonzeroExit(t *testing.T) {
 	// Some steamcmd versions return nonzero even after a clean install.
 	// A real success marker should still be trusted.
