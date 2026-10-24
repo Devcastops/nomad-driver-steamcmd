@@ -103,6 +103,7 @@ config {
   windows_display = false            # wrap with xvfb-run --auto-servernum; only with platform="windows"
   update_on_start = true             # re-run steamcmd before every launch
   install_timeout = "20m"            # optional, Go duration string
+  repair_stale_manifest = false      # see "Stale app manifest" below
 
   # Sets WINEPREFIX for the launched process; overrides the plugin-level
   # default_wine_prefix if both are set; only meaningful with platform="windows"
@@ -422,6 +423,24 @@ incorrectly specifically in the Nomad client agent's plugin-config parsing
 path (flat attributes decoded fine; the nested block's contents silently
 came back as zero values even when set in HCL). See `driver/config.go` for
 the full note.
+
+### Stale app manifest (`repair_stale_manifest`)
+
+If the game ships a new build while a server is running, the next install can
+fail with `Error! App '<id>' state is 0x6 after update job.` and no download
+(`Update state (0x0) unknown, progress: 0.00 (0 / 0)`). steamcmd's own
+`logs/content_log.txt` shows `Failed to get manifest request code, 'Access
+Denied'` for the depot manifest recorded in
+`<install_dir>/steamapps/appmanifest_<app_id>.acf`: Steam no longer serves the
+superseded manifest. Deleting that one file by hand makes steamcmd download
+the app again.
+
+With `repair_stale_manifest = true` the driver does that itself: on exactly
+that error it deletes `<install_dir>/steamapps/appmanifest_<app_id>.acf`
+(nothing else in `install_dir`), emits a task event naming the removed file,
+and runs steamcmd once more. If there is no manifest to remove, or the retry
+fails too, the task fails as before. Off by default. Expect a large
+download on the retry.
 
 ## Plugin (client agent) config reference
 
