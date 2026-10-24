@@ -17,10 +17,18 @@ import (
 // failed installs, and occasionally nonzero on states that aren't real
 // failures (e.g. some versions on "already up to date"). We do not trust
 // the exit code alone -- we scan stdout for known terminal markers.
+//
+// reAuthErr matches login failures. steamcmd prints "FAILED" in capitals
+// for these ("...FAILED (Invalid Password)", "FAILED login with result
+// code ..."), so the bare word is matched case-sensitively and only in
+// those forms. A case-insensitive bare "failed" also matches the harmless
+// "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'" that
+// steamcmd prints on most runs, which made every unrelated install error
+// look like an authentication failure.
 var (
 	reSuccess  = regexp.MustCompile(`Success!\s*App\s*'(\d+)'\s*(fully installed|fully updated|already up to date)`)
 	reError    = regexp.MustCompile(`(?i)ERROR!\s*(.+)`)
-	reAuthErr  = regexp.MustCompile(`(?i)(FAILED|Invalid Password|Two-factor|Login Failure|Rate Limit Exceeded)`)
+	reAuthErr  = regexp.MustCompile(`FAILED \(|FAILED login|(?i:Invalid Password|Two-factor|Login Failure|Rate Limit Exceeded)`)
 	reProgress = regexp.MustCompile(`Update state \(0x[0-9a-fA-F]+\)\s+([a-zA-Z ,]+?),\s*progress:\s*([\d.]+)`)
 )
 
@@ -189,9 +197,9 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 	// (bad credentials, no cached session) can never produce a genuine
 	// "Success! App 'X' ..." line afterward -- so if we saw one, trust it,
 	// even if an earlier line in the same run happened to match
-	// reAuthErr. This matters because reAuthErr's patterns (especially
-	// the bare "FAILED") are intentionally broad to catch real failures
-	// reliably, which means they can also fire on benign transient lines
+	// reAuthErr. This matters because reAuthErr's patterns are
+	// intentionally broad to catch real failures reliably, which means
+	// they can also fire on benign transient lines
 	// steamcmd prints during a normal login (retries, 2FA prompts on a
 	// session that ultimately authenticates via a cached token, etc).
 	// Confirmed in production: a real install completed successfully
