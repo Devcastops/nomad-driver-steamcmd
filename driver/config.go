@@ -96,6 +96,10 @@ var configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 // TaskConfig is the per-task configuration set in a job spec's
 // `driver = "steamcmd"` task's `config { ... }` block.
 //
+// RepairManifest (repair_stale_manifest) opts in to deleting a stale
+// steamapps/appmanifest_<app_id>.acf and retrying the install once when
+// steamcmd fails with "state is 0x6 after update job". See installWithRepair.
+//
 // Login fields are flat here too (login_anonymous, not a nested login{}
 // block), for the same reason as PluginConfig above.
 type TaskConfig struct {
@@ -120,6 +124,7 @@ type TaskConfig struct {
 	Launch            *LaunchConfig       `codec:"launch"`
 	UpdateOnStart     bool                `codec:"update_on_start"`
 	InstallTimeout    string              `codec:"install_timeout"`
+	RepairManifest    bool                `codec:"repair_stale_manifest"`
 }
 
 // Login builds a LoginConfig from the task's flat login_* fields.
@@ -219,6 +224,10 @@ var taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 	"install_timeout": hclspec.NewDefault(
 		hclspec.NewAttr("install_timeout", "string", false),
 		hclspec.NewLiteral(`""`),
+	),
+	"repair_stale_manifest": hclspec.NewDefault(
+		hclspec.NewAttr("repair_stale_manifest", "bool", false),
+		hclspec.NewLiteral("false"),
 	),
 	"login_anonymous": hclspec.NewDefault(
 		hclspec.NewAttr("login_anonymous", "bool", false),
