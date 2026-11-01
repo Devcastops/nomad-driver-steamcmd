@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,16 +21,51 @@ import (
 // a clear task event beats a mysterious hang.
 const minFreeBytes = 512 * 1024 * 1024 // 512MB
 
-// installDirPopulated is a cheap heuristic for "has steamcmd already put
-// something here" -- used to decide whether update_on_start=false should
-// actually skip the steamcmd pass, versus a genuinely first-ever start
-// where skipping would leave nothing to launch.
-func installDirPopulated(dir string) bool {
-	entries, err := os.ReadDir(dir)
+// reStateFlags pulls StateFlags out of a steamapps/appmanifest_<id>.acf.
+var reStateFlags = regexp.MustCompile(`"StateFlags"\s+"(\d+)"`)
+
+// stateFullyInstalled is the "fully installed" bit of an appmanifest's
+// StateFlags. An app that is installed but needs an update has it set too
+// (flags 6), while an interrupted download (flags 1026) does not.
+const stateFullyInstalled = 4
+
+// appInstalled reports whether steamcmd has previously completed an install
+// of appID into installDir, judged by its appmanifest. It decides whether
+// update_on_start=false may skip steamcmd: merely finding files in
+// installDir is not enough, since a failed or interrupted first install
+// leaves a steamapps/ directory behind, and skipping steamcmd then would try
+// to launch an app that is not there.
+func appInstalled(installDir, appID string) bool {
+	if !reAppID.MatchString(appID) {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(installDir, "steamapps", "appmanifest_"+appID+".acf"))
 	if err != nil {
 		return false
 	}
-	return len(entries) > 0
+	m := reStateFlags.FindSubmatch(b)
+	if m == nil {
+		return false
+	}
+	flags, err := strconv.ParseUint(string(m[1]), 10, 32)
+	return err == nil && flags&stateFullyInstalled != 0
+}
+
+// parseInstallTimeout parses the install_timeout task option. Empty means no
+// timeout (0). Anything else must be a positive Go duration: a typo such as
+// "20 m" used to be ignored silently, leaving the install unbounded.
+func parseInstallTimeout(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid install_timeout %q: %w", s, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid install_timeout %q: must be a positive duration", s)
+	}
+	return d, nil
 }
 
 // taskHandleVersion is passed to drivers.NewTaskHandle so Nomad can detect
@@ -123,6 +159,10 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	if taskCfg.InstallDir == "" {
 		taskCfg.InstallDir = "local/steamapp"
 	}
+	installTimeout, terr := parseInstallTimeout(taskCfg.InstallTimeout)
+	if terr != nil {
+		return nil, nil, terr
+	}
 
 	// Expose volume_mount destinations (CSI / host volumes) inside the task
 	// dir; see setupMounts for why the driver has to do this itself.
@@ -194,14 +234,15 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 
 	// If update_on_start is false and this looks like a re-launch of an
-	// already-installed app (a launch phase is configured and installDir
-	// already has content), skip re-invoking steamcmd entirely rather than
-	// silently updating on every restart regardless of the flag.
-	skipInstall := !taskCfg.UpdateOnStart && taskCfg.Launch != nil && installDirPopulated(installDir)
+	// already-installed app (a launch phase is configured and steamcmd's
+	// manifest says the app is installed), skip re-invoking steamcmd
+	// entirely rather than silently updating on every restart regardless of
+	// the flag.
+	skipInstall := !taskCfg.UpdateOnStart && taskCfg.Launch != nil && appInstalled(installDir, taskCfg.AppID)
 
 	if skipInstall {
 		d.eventer.EmitEvent(&drivers.TaskEvent{TaskID: cfg.ID, TaskName: cfg.Name, Timestamp: time.Now(),
-			Message: "update_on_start is false and install_dir is already populated; skipping steamcmd"})
+			Message: "update_on_start is false and the app is already installed; skipping steamcmd"})
 	} else {
 		args, err := buildArgs(taskCfg, login, installDir)
 		if err != nil {
@@ -210,12 +251,10 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		}
 
 		installCtx := h.ctx
-		if taskCfg.InstallTimeout != "" {
-			if dur, perr := time.ParseDuration(taskCfg.InstallTimeout); perr == nil {
-				var cancel context.CancelFunc
-				installCtx, cancel = context.WithTimeout(h.ctx, dur)
-				defer cancel()
-			}
+		if installTimeout > 0 {
+			var cancel context.CancelFunc
+			installCtx, cancel = context.WithTimeout(h.ctx, installTimeout)
+			defer cancel()
 		}
 
 		release := d.acquireInstallSlot(installCtx)
@@ -457,6 +496,8 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 	if signal != "" {
 		if s, err := parseSignal(signal); err == nil {
 			sig = s
+		} else {
+			d.logger.Warn("unsupported kill signal, falling back to SIGTERM", "task_id", taskID, "signal", signal, "error", err)
 		}
 	}
 
@@ -587,36 +628,16 @@ func taskLogFiles(cfg *drivers.TaskConfig) (stdout, stderr *os.File, closeFn fun
 	return so, se, func() { so.Close(); se.Close() }, nil
 }
 
-// resolveWinePrefix applies task-overrides-plugin precedence for
-// WINEPREFIX -- the same pattern as login (resolveLogin): per-task
-// config wins when present, plugin config is the fleet-wide fallback.
-//
-// wine_prefix has both a plugin-level default_wine_prefix and a
-// task-level override deliberately: the prefix is genuinely a
-// client/host-level concern (a fixed filesystem path on a specific node,
-// usually shared across whatever Windows apps run there) as much as a
-// per-task one, but agent-level (plugin) config forwarding has a
-// confirmed history of not reaching SetConfig reliably on some Nomad
-// versions (see PluginConfig's doc comment) -- task-level config doesn't
-// have that problem, so it stays available as the safer choice if you're
-// not certain your Nomad version is unaffected.
-func resolveWinePrefix(task, plugin string) string {
-	if task != "" {
-		return task
-	}
-	return plugin
-}
-
 // buildLaunchCommand computes the actual command and args to execute,
-// automatically wrapping with wine (and optionally xvfb-run) when
+// automatically wrapping with Proton (and optionally xvfb-run) when
 // platform is "windows" -- so a job spec can write launch.command as the
 // Windows .exe directly, with its normal args, rather than needing to
-// know the exact `xvfb-run --auto-servernum wine <exe> <args>` wrapping
-// syntax and argument ordering.
+// know the exact `xvfb-run --auto-servernum <proton> run <exe> <args>`
+// wrapping syntax and argument ordering.
 //
 // windows_display defaults to false and is never auto-enabled just
 // because platform=="windows" -- confirmed in production this exact
-// wine+xvfb-run combination is what one specific app (FOUNDRY, 2915550)
+// Xvfb combination is what one specific app (FOUNDRY, 2915550)
 // needs, but plenty of Windows console apps genuinely don't need any
 // display at all. Forcing Xvfb unconditionally onto every windows-
 // platform task would reintroduce failure surface (stale display locks,
@@ -629,7 +650,7 @@ func buildLaunchCommand(cfg TaskConfig, rt windowsRuntime) (command string, args
 		return command, args
 	}
 
-	// Platform=="windows" always needs wine to execute the downloaded
+	// Platform=="windows" always needs Proton to execute the downloaded
 	// Windows binary on a Linux client -- unlike the display, this part
 	// is safe and correct to automate unconditionally.
 	runExe, runPre := rt.executable()
@@ -706,6 +727,8 @@ func parseSignal(s string) (syscall.Signal, error) {
 		return syscall.SIGINT, nil
 	case "SIGHUP", "HUP":
 		return syscall.SIGHUP, nil
+	case "SIGQUIT", "QUIT":
+		return syscall.SIGQUIT, nil
 	case "SIGUSR1", "USR1":
 		return syscall.SIGUSR1, nil
 	case "SIGUSR2", "USR2":

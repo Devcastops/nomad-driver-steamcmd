@@ -84,7 +84,7 @@ func buildArgs(cfg TaskConfig, login LoginConfig, installDir string) ([]string, 
 	// depot steamcmd fetches, regardless of the host OS it's actually
 	// running on -- e.g. downloading the Windows build of a
 	// Windows-only dedicated server onto a Linux client, to then run
-	// under Wine. Without this, steamcmd silently installs nothing
+	// under Proton. Without this, steamcmd silently installs nothing
 	// useful for that platform: no error, just an install_dir containing
 	// only Steam's own runtime scaffolding and no actual app content.
 	if cfg.Platform != "" {
@@ -161,6 +161,11 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 	cmd.Stdout = io.MultiWriter(pw, stdout)
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// steamcmd.sh runs the real binary as a child. The default cancel only
+	// kills the top-level process, leaving that child running (and holding
+	// the output pipe open) after install_timeout or a task kill, so kill the
+	// whole process group instead.
+	cmd.Cancel = func() error { return signalProcessGroup(cmd.Process.Pid, syscall.SIGKILL) }
 
 	result := &installResult{}
 	var lastProgress time.Time
@@ -168,10 +173,24 @@ func runInstall(ctx context.Context, steamCmdPath string, args []string, stdout,
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
-		scanner := bufio.NewScanner(pr)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
+		// bufio.Reader, not bufio.Scanner: a Scanner stops for good on a line
+		// over its limit, after which nothing drains the pipe and steamcmd
+		// blocks on its next write. ReadLine hands back the first buffer-full
+		// of an overlong line; the rest of that line is skipped and reading
+		// carries on, so later markers (e.g. the success line) are still seen.
+		reader := bufio.NewReaderSize(pr, 64*1024)
+		for {
+			b, isPrefix, err := reader.ReadLine()
+			if err != nil {
+				return
+			}
+			for more := isPrefix; more; {
+				_, more, err = reader.ReadLine()
+				if err != nil {
+					break
+				}
+			}
+			line := string(b)
 			if m := reSuccess.FindStringSubmatch(line); m != nil {
 				result.Success = true
 				result.Message = line
